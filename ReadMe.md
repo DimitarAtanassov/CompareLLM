@@ -29,15 +29,12 @@ Here’s a quick look at AskManyLLMs in action:
 
 #### Sending prompts (text + multimodal)
 ![User Input](./screenshots/user_in.png)
-![User Input 2](./screenshots/user_in2.png)
 
 #### Loading state
 ![Loading](./screenshots/loading.png)
 
 #### Results streaming back
-![Response 1](./screenshots/res1.png)
-![Response 2](./screenshots/res2.png)
-![Response 3](./screenshots/res3.png)
+![Response 1](./screenshots/res.png)
 
 ### Semantic Search testing (embeddings + cosine similarity search)
 #### Embedding Home
