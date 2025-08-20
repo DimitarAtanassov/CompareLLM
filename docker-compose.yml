@@ -1,0 +1,61 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    platform: linux/arm64/v8
+    ports: ["11434:11434"]
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_KEEP_ALIVE=5m
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  model-puller:
+    image: alpine:3.20
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      MODELS_CONFIG: /config/models.yaml
+      ENABLE_AUTO_PULL: "true"
+      PULL_RETRIES: "5"
+      PULL_SLEEP_SECS: "3"
+    volumes:
+      - ./config:/config:ro
+      - ./scripts/pull-models.sh:/pull-models.sh:ro
+    entrypoint: ["/bin/sh", "/pull-models.sh"]
+    restart: "no"
+
+  api:
+    build: ./api
+    environment:
+      MODELS_CONFIG: /config/models.yaml
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    volumes:
+      - ./config:/config:ro
+    ports: ["8080:8080"]
+    depends_on:
+      model-puller:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  ui:
+    build: ./ui
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: /backend   # <- matches rewrite
+    ports: ["3000:3000"]
+    depends_on: [api]
+
+volumes:
+  ollama:

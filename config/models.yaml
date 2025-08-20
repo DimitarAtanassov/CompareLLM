@@ -1,0 +1,50 @@
+providers:
+  # Ollama (OpenAI-compatible)
+  ollama:
+    type: openai
+    base_url: http://ollama:11434/v1
+    api_key_env: ""          # none
+    headers: {}
+    models:
+      - llama3.1:8b
+      - qwen2.5:7b-instruct
+      - mistral:7b-instruct
+      - gemma3:1b
+
+  # OpenAI (ChatGPT)
+  openai:
+    type: openai
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    headers: {}
+    models:
+      - gpt-5
+
+  # DeepSeek (OpenAI-style API)
+  deepseek:
+    type: openai
+    base_url: https://api.deepseek.com/v1
+    api_key_env: DEEPSEEK_API_KEY
+    headers: {}
+    models:
+      - deepseek-chat
+      - deepseek-reasoner
+
+  # Gemini (different API/shape)
+  gemini:
+    type: gemini
+    base_url: https://generativelanguage.googleapis.com
+    api_key_env: GOOGLE_API_KEY
+    headers: {}
+    models:
+      - gemini-1.5-flash
+      - gemini-1.5-pro
+
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    headers:
+      anthropic-version: "2023-06-01"  # required
+    models:
+      - claude-3-5-haiku-latest
