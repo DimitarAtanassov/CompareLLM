@@ -11,7 +11,7 @@ Perfect for **experimentation, RAG prototyping, or just seeing how different mod
 ## 🚀 Features
 
 * **Multi-Provider Support**: OpenAI, Anthropic, Gemini, DeepSeek, Ollama, vLLM, and more.
-* **Multimodal Ready**: Send text, images, or structured prompts.
+* **Embeddings Support**: End users can now generate embeddings from multiple providers (OpenAI, Voyage AI, open-source backends, etc.) in parallel for the same input, enabling side-by-side comparison and cosine similarity search.
 * **Streaming Responses**: Real-time NDJSON streaming.
 * **Frontend Playground**: Next.js + Tailwind, clean and responsive.
 * **Configurable**: Easily add/remove models via `models.yaml`.
@@ -22,24 +22,42 @@ Perfect for **experimentation, RAG prototyping, or just seeing how different mod
 ## 🖼 Demo
 
 Here’s a quick look at AskManyLLMs in action:
-
-### Home screen
+### Prompt Testing:
+#### Home screen
 ![Home](./screenshots/home.png)
 
-### Model controls & overrides
+#### Model controls & overrides
 ![Controls](./screenshots/controls.png)
 
-### Sending prompts (text + multimodal)
+#### Sending prompts (text + multimodal)
 ![User Input](./screenshots/user_in.png)
 ![User Input 2](./screenshots/user_in2.png)
 
-### Loading state
+#### Loading state
 ![Loading](./screenshots/loading.png)
 
-### Results streaming back
+#### Results streaming back
 ![Response 1](./screenshots/res1.png)
 ![Response 2](./screenshots/res2.png)
 ![Response 3](./screenshots/res3.png)
+
+### Semantic Search testing (embeddings + cosine similarity search)
+#### Embedding Home
+![Embedding Home](./screenshots/embedding_home.png)
+#### Load Embedding Data
+![Load Embedding Data](./screenshots/load_embedding_data.png)
+#### Select Embedding Models
+![Select Embedding Models](./screenshots/select_embedding_models.png)
+#### Semantic Search Input
+![Semantic Search Input](./screenshots/semantic_search_in_1.png)
+#### Semantic Search Results
+![Semantic Search Res](./screenshots/semantic_search_res_1.png)
+#### Semantic Search Input 2
+![Semantic Search Input 2](./screenshots/semantic_search_in_2.png)
+#### Semantic Search Results 2
+![Semantic Search Res 2](./screenshots/semantic_search_res_2.png)
+#### Manage Loaded Data
+![Manage Loaded Data](./screenshots/manage_loaded_data.png)
 ---
 
 ## ⚡ Quick Start

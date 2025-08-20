@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 import yaml
+import numpy as np
 
 @dataclass
 class Provider:
@@ -14,6 +15,11 @@ class Provider:
     api_key_env: Optional[str]
     headers: Dict[str, str]
     models: List[str]
+    embedding_models: List[str] = None  # New field for embedding models
+
+    def __post_init__(self):
+        if self.embedding_models is None:
+            self.embedding_models = []
 
     @property
     def api_key(self) -> Optional[str]:
@@ -30,12 +36,19 @@ class ModelRegistry:
                 api_key_env=(p.get("api_key_env") or None),
                 headers=(p.get("headers") or {}),
                 models=(p.get("models") or []),
+                embedding_models=(p.get("embedding_models") or []),
             )
         # map model -> (provider, model_name)
         self.model_map: Dict[str, Tuple[Provider, str]] = {}
         for prov in self.providers.values():
             for m in prov.models:
                 self.model_map[m] = (prov, m)
+        
+        # map embedding_model -> (provider, model_name)
+        self.embedding_map: Dict[str, Tuple[Provider, str]] = {}
+        for prov in self.providers.values():
+            for m in prov.embedding_models:
+                self.embedding_map[m] = (prov, m)
 
     @classmethod
     def from_path(cls, path: str) -> "ModelRegistry":
@@ -52,6 +65,102 @@ def host_lock(provider: Provider) -> asyncio.Semaphore:
     if k not in _HOST_LOCKS:
         _HOST_LOCKS[k] = asyncio.Semaphore(1)
     return _HOST_LOCKS[k]
+
+# -------------------------- Embedding adapters --------------------------
+
+async def embedding_call(
+    provider: Provider,
+    model: str,
+    texts: List[str],
+    timeout_s: int = 180,
+) -> List[List[float]]:
+    """
+    Unified embedding call for: OpenAI-compatible providers, Gemini, Cohere, and Voyage.
+    """
+    headers = dict(provider.headers or {})
+
+    if provider.type == "openai":
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        url = f"{provider.base_url}/embeddings"
+        
+        payload = {
+            "model": model,
+            "input": texts,
+        }
+        
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            _raise_nice(r)
+            data = r.json()
+            return [item["embedding"] for item in data["data"]]
+
+    elif provider.type == "gemini":
+        # Gemini embedding API: models/*:embedContent
+        if provider.api_key:
+            params = {"key": provider.api_key}
+        else:
+            params = {}
+        
+        url = f"{provider.base_url}/v1beta/models/{model}:embedContent"
+        
+        # Gemini expects single text input, so we'll batch them
+        all_embeddings = []
+        for text in texts:
+            payload = {
+                "content": {
+                    "parts": [{"text": text}]
+                }
+            }
+            
+            async with httpx.AsyncClient(timeout=timeout_s) as client:
+                r = await client.post(url, params=params, headers=headers, json=payload)
+                _raise_nice(r)
+                data = r.json()
+                all_embeddings.append(data["embedding"]["values"])
+        
+        return all_embeddings
+
+    elif provider.type == "cohere":
+        # Cohere embeddings API
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        
+        url = f"{provider.base_url}/v1/embed"
+        
+        payload = {
+            "model": model,
+            "texts": texts,
+            "input_type": "search_document"  # Can be adjusted based on use case
+        }
+        
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            _raise_nice(r)
+            data = r.json()
+            return data["embeddings"]
+
+    elif provider.type == "voyage":
+        # Voyage AI embeddings API
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        
+        url = f"{provider.base_url}/v1/embeddings"
+        
+        payload = {
+            "model": model,
+            "input": texts,
+            "input_type": "document"  # Can be adjusted based on use case
+        }
+        
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(url, headers=headers, json=payload)
+            _raise_nice(r)
+            data = r.json()
+            return [item["embedding"] for item in data["data"]]
+
+    else:
+        raise ValueError(f"Unsupported provider type for embeddings: {provider.type}")
 
 # -------------------------- Chat adapters --------------------------
 
@@ -210,6 +319,53 @@ async def chat_call(
 
     else:
         raise ValueError(f"Unsupported provider type: {provider.type}")
+
+# -------------------------- Similarity functions --------------------------
+
+def cosine_similarity(a: List[float], b: List[float]) -> float:
+    """Calculate cosine similarity between two vectors."""
+    a_np = np.array(a)
+    b_np = np.array(b)
+    
+    dot_product = np.dot(a_np, b_np)
+    norm_a = np.linalg.norm(a_np)
+    norm_b = np.linalg.norm(b_np)
+    
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    
+    return float(dot_product / (norm_a * norm_b))
+
+def find_similar_documents(
+    query_embedding: List[float],
+    document_embeddings: List[Dict[str, Any]],
+    top_k: int = 5
+) -> List[Dict[str, Any]]:
+    """
+    Find the most similar documents to a query embedding.
+    
+    Args:
+        query_embedding: The embedding vector of the query
+        document_embeddings: List of dicts with 'embedding' and other metadata
+        top_k: Number of top results to return
+    
+    Returns:
+        List of documents sorted by similarity score (highest first)
+    """
+    similarities = []
+    
+    for doc in document_embeddings:
+        if 'embedding' not in doc:
+            continue
+            
+        similarity = cosine_similarity(query_embedding, doc['embedding'])
+        doc_copy = doc.copy()
+        doc_copy['similarity_score'] = similarity
+        similarities.append(doc_copy)
+    
+    # Sort by similarity score (descending) and return top_k
+    similarities.sort(key=lambda x: x['similarity_score'], reverse=True)
+    return similarities[:top_k]
 
 
 def _raise_nice(r: httpx.Response) -> None:

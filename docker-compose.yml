@@ -38,10 +38,14 @@ services:
     build: ./api
     environment:
       MODELS_CONFIG: /config/models.yaml
+      # Chat model API keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      # Embedding model API keys
+      COHERE_API_KEY: ${COHERE_API_KEY}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY}
     volumes:
       - ./config:/config:ro
     ports: ["8080:8080"]

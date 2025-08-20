@@ -10,6 +10,10 @@ providers:
       - qwen2.5:7b-instruct
       - mistral:7b-instruct
       - gemma3:1b
+    embedding_models:
+      - nomic-embed-text
+      - all-minilm
+      - mxbai-embed-large
 
   # OpenAI (ChatGPT)
   openai:
@@ -19,6 +23,10 @@ providers:
     headers: {}
     models:
       - gpt-5
+    embedding_models:
+      - text-embedding-3-small
+      - text-embedding-3-large
+      - text-embedding-ada-002
 
   # DeepSeek (OpenAI-style API)
   deepseek:
@@ -39,7 +47,11 @@ providers:
     models:
       - gemini-1.5-flash
       - gemini-1.5-pro
+    embedding_models:
+      - text-embedding-004
+      - embedding-001
 
+  # Anthropic
   anthropic:
     type: anthropic
     base_url: https://api.anthropic.com
@@ -48,3 +60,27 @@ providers:
       anthropic-version: "2023-06-01"  # required
     models:
       - claude-3-5-haiku-latest
+
+  # Cohere
+  cohere:
+    type: cohere
+    base_url: https://api.cohere.ai
+    api_key_env: COHERE_API_KEY
+    headers: {}
+    embedding_models:
+      - embed-english-v3.0
+      - embed-multilingual-v3.0
+      - embed-english-light-v3.0
+      - embed-multilingual-light-v3.0
+
+  # Voyage AI
+  voyage:
+    type: voyage
+    base_url: https://api.voyageai.com
+    api_key_env: VOYAGE_API_KEY
+    headers: {}
+    embedding_models:
+      - voyage-large-2
+      - voyage-code-2
+      - voyage-2
+      - voyage-lite-02-instruct
