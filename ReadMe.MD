@@ -21,7 +21,28 @@ Perfect for **experimentation, RAG prototyping, or just seeing how different mod
 
 ## 🖼 Demo
 
-> *TODO*
+Here’s a quick look at AskManyLLMs in action:
+
+### Home screen
+![Home](./screenshots/home.png)
+
+### Model controls & overrides
+![Controls](./screenshots/controls.png)
+
+### Sending prompts (text + multimodal)
+![User Input](./screenshots/user_in.png)
+![User Input 2](./screenshots/user_in2.png)
+
+### Loading state
+![Loading](./screenshots/loading.png)
+
+### Results streaming back
+![Response 1](./screenshots/res1.png)
+![Response 2](./screenshots/res2.png)
+![Response 3](./screenshots/res3.png)
+
+### Image input example
+![Image Prompt](./screenshots/image.png)
 
 ---
 
