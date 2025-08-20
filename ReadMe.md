@@ -1,7 +1,7 @@
 # LLMCompare
 A prompting and embedding tool for exploring and comparing LLMs.
 
-AskManyLLMs is a playground where you can:
+LLMCompare is a playground where you can:
 - Send the same text prompt to multiple models (OpenAI, Anthropic, Gemini, Ollama, vLLM, etc.) and watch their responses stream back in real time.  
 - Generate **embeddings** across multiple providers (OpenAI, Voyage AI, Cohere, Ollama, etc.) from the same input, making it easy to run side-by-side
 ---
@@ -63,8 +63,8 @@ Here’s a quick look at AskManyLLMs in action:
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/DimitarAtanassov/askManyLLMs.git
-cd AskManyLLMs
+git clone https://github.com/DimitarAtanassov/LLMCompare.git
+cd LLMCompare
 ```
 
 ### 2. Set up environment variables
