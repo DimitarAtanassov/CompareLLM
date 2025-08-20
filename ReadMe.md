@@ -1,11 +1,10 @@
 # 🎤 AskManyLLMs
 
-A prompting tool for exploring and comparing LLMs
-AskManyLLMs is a playground where you can send the same text prompt to multiple models (OpenAI, Anthropic, Gemini, Ollama, vLLM, etc.) and watch their responses stream back in real time.
-Perfect for experimentation, RAG prototyping, or just seeing how different models think side by side.
+A prompting and embedding tool for exploring and comparing LLMs.
 
-Perfect for **experimentation, RAG prototyping, or just seeing how different models think side by side**.
-
+AskManyLLMs is a playground where you can:
+- Send the same text prompt to multiple models (OpenAI, Anthropic, Gemini, Ollama, vLLM, etc.) and watch their responses stream back in real time.  
+- Generate **embeddings** across multiple providers (OpenAI, Voyage AI, Cohere, Ollama, etc.) from the same input, making it easy to run side-by-side
 ---
 
 ## 🚀 Features
