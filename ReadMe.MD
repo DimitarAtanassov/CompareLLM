@@ -30,7 +30,7 @@ Perfect for **experimentation, RAG prototyping, or just seeing how different mod
 ### 1. Clone the repo
 
 ```bash
-git clone https://github.com/yourusername/AskManyLLMs.git
+git clone https://github.com/DimitarAtanassov/askManyLLMs.git
 cd AskManyLLMs
 ```
 
