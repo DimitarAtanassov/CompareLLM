@@ -40,10 +40,6 @@ Here’s a quick look at AskManyLLMs in action:
 ![Response 1](./screenshots/res1.png)
 ![Response 2](./screenshots/res2.png)
 ![Response 3](./screenshots/res3.png)
-
-### Image input example
-![Image Prompt](./screenshots/image.png)
-
 ---
 
 ## ⚡ Quick Start
