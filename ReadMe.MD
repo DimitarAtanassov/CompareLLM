@@ -1,6 +1,3 @@
-
----
-
 # 🎤 AskManyLLMs
 
 *A multimodal prompting tool for exploring and comparing LLMs*
