@@ -21,7 +21,7 @@ Perfect for **experimentation, RAG prototyping, or just seeing how different mod
 
 ## 🖼 Demo
 
-> *(Add a screenshot or GIF of the frontend showing multiple models answering the same question side by side — this will shine on LinkedIn!)*
+> *TODO*
 
 ---
 
