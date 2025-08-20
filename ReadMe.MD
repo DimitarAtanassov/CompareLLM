@@ -1,6 +1,3 @@
-Got it ✅ — let’s refresh the **README** so it clearly says this is a **multimodal prompting tool**, not just a battle arena. I’ll also add the `.env` setup guidance we discussed.
-
-Here’s the updated **README.md** draft:
 
 ---
 
@@ -91,18 +88,3 @@ Prompting across models should be **easy, fun, and visual**.
 AskManyLLMs makes it possible to experiment with **multimodal prompts** and see how models respond differently — side by side.
 
 ---
-
-## 🤝 Contributing
-
-PRs are welcome! Open an issue if you’d like to see new providers or features.
-
----
-
-## 📢 Share It
-
-If you enjoy this tool, please ⭐ the repo and share your experiments on LinkedIn or X/Twitter.
-Tag it with **#AskManyLLMs** so we can see what you’re building.
-
----
-
-Would you like me to also **write the LinkedIn caption** (fun + professional) that pairs well with a screenshot/GIF of your tool, so you can post it right away?
