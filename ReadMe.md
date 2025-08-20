@@ -1,5 +1,4 @@
-# 🎤 AskManyLLMs
-
+# LLMCompare
 A prompting and embedding tool for exploring and comparing LLMs.
 
 AskManyLLMs is a playground where you can:
@@ -80,34 +79,47 @@ MODELS_CONFIG=/config/models.yaml
 LOG_LEVEL=INFO
 
 # ======================
-# OpenAI
+# OpenAI (Chat + Embeddings)
 # ======================
-# Example: sk-proj-...
-OPENAI_API_KEY=your-openai-api-key
+# Replace with your OpenAI API key (format: sk-proj-...)
+OPENAI_API_KEY=
 
 # ======================
-# DeepSeek
+# DeepSeek (Chat)
 # ======================
-# Example: sk-...
-DEEPSEEK_API_KEY=your-deepseek-api-key
+# Replace with your DeepSeek API key (format: sk-...)
+DEEPSEEK_API_KEY=
 
 # ======================
-# Google Gemini
+# Google Gemini (Chat)
 # ======================
-# Example: AIza...
-GOOGLE_API_KEY=your-google-gemini-api-key
+# Replace with your Google API key (format: AIza...)
+GOOGLE_API_KEY=
 
 # ======================
-# Anthropic Claude
+# Anthropic Claude (Chat)
 # ======================
-# Example: sk-ant-...
-ANTHROPIC_API_KEY=your-anthropic-api-key
+# Replace with your Anthropic API key (format: sk-ant-...)
+ANTHROPIC_API_KEY=
 
 # ======================
-# Ollama
+# Voyage AI (Embeddings - Premium)
+# ======================
+# Replace with your Voyage AI key (format: pa-...)
+VOYAGE_API_KEY=
+
+# ======================
+# Cohere (Chat + Embeddings)
+# ======================
+# Replace with your Cohere API key if available
+COHERE_API_KEY=
+
+# ======================
+# Ollama (Local Models - Chat + Embeddings)
 # ======================
 # No API key needed for local models, just ensure Ollama is running
-# (ollama serve inside the container or on host)
+# Example: ollama serve (inside container or host)
+
 ```
 
 Edit `.env` and fill in your keys:
