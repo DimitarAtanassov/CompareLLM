@@ -1,234 +1,8 @@
-from __future__ import annotations
-import json
 import os, asyncio
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
-import httpx
-import yaml
-
-@dataclass
-class Provider:
-    name: str
-    type: str                 
-    base_url: str
-    api_key_env: Optional[str]
-    headers: Dict[str, str]
-    models: List[str]
-
-    @property
-    def api_key(self) -> Optional[str]:
-        return os.getenv(self.api_key_env) if self.api_key_env else None
-
-class ModelRegistry:
-    def __init__(self, cfg: Dict[str, Any]):
-        self.providers: Dict[str, Provider] = {}
-        for pname, p in cfg.get("providers", {}).items():
-            self.providers[pname] = Provider(
-                name=pname,
-                type=p["type"],
-                base_url=p["base_url"].rstrip("/"),
-                api_key_env=(p.get("api_key_env") or None),
-                headers=(p.get("headers") or {}),
-                models=(p.get("models") or []),
-            )
-        # map model -> (provider, model_name)
-        self.model_map: Dict[str, Tuple[Provider, str]] = {}
-        for prov in self.providers.values():
-            for m in prov.models:
-                self.model_map[m] = (prov, m)
-
-    @classmethod
-    def from_path(cls, path: str) -> "ModelRegistry":
-        with open(path, "r") as f:
-            cfg = yaml.safe_load(f) or {}
-        return cls(cfg)
-
-# ------------ per-host serialization (helps on Mac CPU) ------------
-_HOST_LOCKS: Dict[str, asyncio.Semaphore] = {}
-def host_lock_key(provider: Provider) -> str:
-    return provider.base_url
-def host_lock(provider: Provider) -> asyncio.Semaphore:
-    k = host_lock_key(provider)
-    if k not in _HOST_LOCKS:
-        _HOST_LOCKS[k] = asyncio.Semaphore(1)
-    return _HOST_LOCKS[k]
-
-# -------------------------- Chat adapters --------------------------
-
-async def chat_call(
-    provider: Provider,
-    model: str,
-    messages: List[Dict[str, str]],
-    temperature: float,
-    max_tokens: int,
-    min_tokens: Optional[int] = None,    # <— added
-    timeout_s: int = 180,
-) -> str:
-    """
-    Unified chat call for: OpenAI-compatible providers + Gemini.
-    """
-    headers = dict(provider.headers or {})
-
-    if provider.type == "openai":
-        if provider.api_key:
-            headers["Authorization"] = f"Bearer {provider.api_key}"
-        url = f"{provider.base_url}/chat/completions"
-
-        def build_payload(use_completion_tokens: bool, include_temperature: bool):
-            body = {
-                "model": model,
-                "messages": messages,
-            }
-            if include_temperature:
-                body["temperature"] = temperature
-            if use_completion_tokens:
-                body["max_completion_tokens"] = max_tokens
-            else:
-                body["max_tokens"] = max_tokens
-            # no min_tokens equivalent here
-            return body
-        
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            use_completion = False           # start with max_tokens
-            include_temp   = True            # start including temperature
-
-            # attempt 1
-            r = await client.post(
-                url, headers=headers, json=build_payload(use_completion, include_temp)
-            )
-
-            # If bad request, inspect and adapt up to two times
-            for _ in range(2):
-                if r.status_code != 400:
-                    break
-                try:
-                    err = r.json()
-                    # OpenAI errors may be {"error": {...}} OR flat dict
-                    meta = err.get("error", err)
-                    msg = str(meta.get("message", meta))
-                except Exception:
-                    msg = ""
-
-                need_completion = ("max_tokens" in msg and "max_completion_tokens" in msg)
-                temp_unsupported = ("temperature" in msg and "supported" in msg)
-
-                if not (need_completion or temp_unsupported):
-                    break  # unknown 400—let _raise_nice handle it
-
-                # adjust knobs based on the message
-                if need_completion:
-                    use_completion = True
-                if temp_unsupported:
-                    include_temp = False
-
-                # retry with adjusted payload
-                r = await client.post(
-                    url, headers=headers, json=build_payload(use_completion, include_temp)
-                )
-
-            _raise_nice(r)
-            data = r.json()
-            return data["choices"][0]["message"]["content"]
-
-    elif provider.type == "gemini":
-        # Gemini: models/*:generateContent
-        # Convert OpenAI-style messages -> Gemini contents.
-        # Prefer using systemInstruction if present.
-        sys_texts = [m["content"] for m in messages if m["role"] == "system"]
-        user_assistant_msgs = [m for m in messages if m["role"] in ("user", "assistant")]
-
-        contents = []
-        for m in user_assistant_msgs:
-            role = "user" if m["role"] == "user" else "model"
-            contents.append({"role": role, "parts": [{"text": m["content"]}]})
-
-        params = {"key": provider.api_key} if provider.api_key else {}
-        url = f"{provider.base_url}/v1beta/models/{model}:generateContent"
-        payload: Dict[str, Any] = {
-            "contents": contents,
-            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
-        }
-        if sys_texts:
-            payload["systemInstruction"] = {"role": "user", "parts": [{"text": "\n".join(sys_texts)}]}
-
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            r = await client.post(url, params=params, headers=headers, json=payload)
-            _raise_nice(r)
-            data = r.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
-    elif provider.type == "anthropic":
-        # Anthropic Messages API: POST /v1/messages
-        # Required headers:
-        #   - x-api-key: <ANTHROPIC_API_KEY>
-        #   - anthropic-version: e.g. "2023-06-01"
-        if provider.api_key:
-            headers["x-api-key"] = provider.api_key
-        # Allow overriding via config headers; otherwise set a sane default.
-        headers.setdefault("anthropic-version", "2023-06-01")
-
-        url = f"{provider.base_url.rstrip('/')}/v1/messages"
-
-        # Extract system message (concat if multiple; order preserved)
-        system_texts = [m["content"] for m in messages if m.get("role") == "system"]
-        system_str = "\n".join(system_texts) if system_texts else None
-
-        # Translate the remaining turns
-        turns = []
-        for m in messages:
-            role = m.get("role")
-            if role not in ("user", "assistant"):
-                continue
-            # Anthropic expects content as array of parts; simplest is one text part
-            turns.append({
-                "role": "user" if role == "user" else "assistant",
-                "content": [{"type": "text", "text": m.get("content", "")}],
-            })
-
-        payload: Dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "messages": turns,
-        }
-        if system_str:
-            payload["system"] = system_str
-        if min_tokens is not None:
-            payload["min_output_tokens"] = int(min_tokens)
-
-        async with httpx.AsyncClient(timeout=timeout_s) as client:
-            r = await client.post(url, headers=headers, json=payload)
-            _raise_nice(r)
-            data = r.json()
-
-            # data.content is a list of blocks; collect any text blocks
-            parts = data.get("content", []) or []
-            out: List[str] = []
-            for p in parts:
-                if isinstance(p, dict) and p.get("type") == "text" and "text" in p:
-                    out.append(p["text"])
-            return "".join(out) if out else json.dumps(data)
-
-    else:
-        raise ValueError(f"Unsupported provider type: {provider.type}")
-
-
-def _raise_nice(r: httpx.Response) -> None:
-    try:
-        r.raise_for_status()
-    except httpx.HTTPStatusError as e:
-        detail = ""
-        try:
-            j = r.json()
-            detail = j.get("error", j.get("message", "")) or str(j)
-        except Exception:
-            pass
-        raise RuntimeError(f"{r.status_code} {r.reason_phrase}: {detail}") from e
-
-import os, asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, ConfigDict  # ✅ use pydantic.Field
-from registry import ModelRegistry, chat_call, host_lock
+from pydantic import BaseModel, Field, ConfigDict
+from registry import ModelRegistry, chat_call, embedding_call, host_lock, find_similar_documents
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import json
@@ -249,7 +23,7 @@ def log_event(kind: str, **fields):
     try:
         LOG.info(json.dumps({"event": kind, **fields}, ensure_ascii=False))
     except Exception as _:
-        # Fallback to a simple message if something isn’t JSON-serializable
+        # Fallback to a simple message if something isn't JSON-serializable
         LOG.info(f"{kind} | {fields}")
 # ---------------------------------------------------------------
 
@@ -265,6 +39,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# In-memory storage for document embeddings
+# In production, you'd want to use a vector database like Pinecone, Weaviate, or Chroma
+document_store: Dict[str, List[Dict[str, Any]]] = {}
 
 class ChatRequest(BaseModel):
     prompt: str
@@ -277,6 +54,25 @@ class ChatRequest(BaseModel):
     model_params: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     model_config = ConfigDict(extra="ignore")
 
+class EmbeddingRequest(BaseModel):
+    texts: List[str]
+    model: str
+    model_config = ConfigDict(extra="ignore")
+
+class SearchRequest(BaseModel):
+    query: str
+    embedding_model: str
+    dataset_id: str
+    top_k: Optional[int] = 5
+    model_config = ConfigDict(extra="ignore")
+
+class DatasetUploadRequest(BaseModel):
+    dataset_id: str
+    documents: List[Dict[str, Any]]  # Each doc should have a 'text' field and any other metadata
+    embedding_model: str
+    text_field: Optional[str] = "text"  # Field containing the text to embed
+    model_config = ConfigDict(extra="ignore")
+
 @app.get("/providers")
 def providers():
     return {
@@ -286,9 +82,243 @@ def providers():
                 "type": p.type,
                 "base_url": p.base_url,
                 "models": p.models,
+                "embedding_models": getattr(p, 'embedding_models', []),
                 "auth_required": bool(p.api_key_env),
             } for p in REGISTRY.providers.values()
         ]
+    }
+
+@app.get("/embedding-models")
+def embedding_models():
+    """Get all available embedding models."""
+    return {
+        "embedding_models": list(getattr(REGISTRY, 'embedding_map', {}).keys())
+    }
+
+@app.get("/datasets")
+def list_datasets():
+    """List all uploaded datasets."""
+    return {
+        "datasets": [
+            {
+                "dataset_id": dataset_id,
+                "document_count": len(docs),
+                "sample_fields": list(docs[0].keys()) if docs else []
+            }
+            for dataset_id, docs in document_store.items()
+        ]
+    }
+
+@app.post("/embeddings")
+async def generate_embeddings(req: EmbeddingRequest):
+    """Generate embeddings for given texts."""
+    embedding_map = getattr(REGISTRY, 'embedding_map', {})
+    if req.model not in embedding_map:
+        raise HTTPException(400, f"Unknown embedding model: {req.model}")
+    
+    provider, model = embedding_map[req.model]
+    
+    log_event(
+        "embedding.start",
+        provider=provider.name,
+        model=req.model,
+        text_count=len(req.texts)
+    )
+    start = time.perf_counter()
+    
+    try:
+        async with host_lock(provider):
+            embeddings = await embedding_call(provider, model, req.texts)
+        
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "embedding.end",
+            provider=provider.name,
+            model=req.model,
+            ok=True,
+            duration_ms=dur,
+            text_count=len(req.texts)
+        )
+        
+        return {
+            "model": req.model,
+            "embeddings": embeddings,
+            "usage": {
+                "prompt_tokens": sum(len(text.split()) for text in req.texts),  # Rough estimate
+                "total_tokens": sum(len(text.split()) for text in req.texts)
+            }
+        }
+    except Exception as e:
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "embedding.end",
+            provider=provider.name,
+            model=req.model,
+            ok=False,
+            duration_ms=dur,
+            error=str(e)
+        )
+        raise HTTPException(500, f"Embedding generation failed: {str(e)}")
+
+@app.post("/upload-dataset")
+async def upload_dataset(req: DatasetUploadRequest):
+    """Upload a dataset and generate embeddings for it."""
+    embedding_map = getattr(REGISTRY, 'embedding_map', {})
+    if req.embedding_model not in embedding_map:
+        raise HTTPException(400, f"Unknown embedding model: {req.embedding_model}")
+    
+    if not req.documents:
+        raise HTTPException(400, "No documents provided")
+    
+    # Extract texts to embed
+    texts = []
+    for doc in req.documents:
+        if req.text_field not in doc:
+            raise HTTPException(400, f"Document missing required field: {req.text_field}")
+        texts.append(str(doc[req.text_field]))
+    
+    provider, model = embedding_map[req.embedding_model]
+    
+    log_event(
+        "dataset.upload.start",
+        dataset_id=req.dataset_id,
+        provider=provider.name,
+        model=req.embedding_model,
+        document_count=len(req.documents)
+    )
+    start = time.perf_counter()
+    
+    try:
+        # Generate embeddings for all texts
+        async with host_lock(provider):
+            embeddings = await embedding_call(provider, model, texts)
+        
+        # Create unique dataset ID for this model combination
+        dataset_key = f"{req.dataset_id}_{req.embedding_model}"
+        
+        # Store documents with their embeddings
+        enhanced_docs = []
+        for i, doc in enumerate(req.documents):
+            enhanced_doc = doc.copy()
+            enhanced_doc['embedding'] = embeddings[i]
+            enhanced_doc['_text_field'] = req.text_field
+            enhanced_doc['_embedding_model'] = req.embedding_model
+            enhanced_docs.append(enhanced_doc)
+        
+        document_store[dataset_key] = enhanced_docs
+        
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "dataset.upload.end",
+            dataset_id=req.dataset_id,
+            provider=provider.name,
+            model=req.embedding_model,
+            ok=True,
+            duration_ms=dur,
+            document_count=len(req.documents)
+        )
+        
+        return {
+            "dataset_id": dataset_key,
+            "document_count": len(enhanced_docs),
+            "embedding_model": req.embedding_model,
+            "message": "Dataset uploaded and embeddings generated successfully"
+        }
+    except Exception as e:
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "dataset.upload.end",
+            dataset_id=req.dataset_id,
+            provider=provider.name,
+            model=req.embedding_model,
+            ok=False,
+            duration_ms=dur,
+            error=str(e)
+        )
+        raise HTTPException(500, f"Dataset upload failed: {str(e)}")
+
+@app.post("/search")
+async def semantic_search(req: SearchRequest):
+    """Perform semantic search against a dataset."""
+    embedding_map = getattr(REGISTRY, 'embedding_map', {})
+    if req.embedding_model not in embedding_map:
+        raise HTTPException(400, f"Unknown embedding model: {req.embedding_model}")
+    
+    if req.dataset_id not in document_store:
+        raise HTTPException(404, f"Dataset not found: {req.dataset_id}")
+    
+    provider, model = embedding_map[req.embedding_model]
+    
+    log_event(
+        "search.start",
+        dataset_id=req.dataset_id,
+        provider=provider.name,
+        model=req.embedding_model,
+        query=req.query[:100]  # Log first 100 chars
+    )
+    start = time.perf_counter()
+    
+    try:
+        # Generate embedding for query
+        async with host_lock(provider):
+            query_embeddings = await embedding_call(provider, model, [req.query])
+        
+        query_embedding = query_embeddings[0]
+        
+        # Find similar documents
+        documents = document_store[req.dataset_id]
+        similar_docs = find_similar_documents(query_embedding, documents, req.top_k)
+        
+        # Remove embedding from response to reduce payload size
+        for doc in similar_docs:
+            if 'embedding' in doc:
+                del doc['embedding']
+        
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "search.end",
+            dataset_id=req.dataset_id,
+            provider=provider.name,
+            model=req.embedding_model,
+            ok=True,
+            duration_ms=dur,
+            results_count=len(similar_docs)
+        )
+        
+        return {
+            "query": req.query,
+            "dataset_id": req.dataset_id,
+            "embedding_model": req.embedding_model,
+            "results": similar_docs,
+            "total_documents": len(documents)
+        }
+    except Exception as e:
+        dur = int((time.perf_counter() - start) * 1000)
+        log_event(
+            "search.end",
+            dataset_id=req.dataset_id,
+            provider=provider.name,
+            model=req.embedding_model,
+            ok=False,
+            duration_ms=dur,
+            error=str(e)
+        )
+        raise HTTPException(500, f"Search failed: {str(e)}")
+
+@app.delete("/datasets/{dataset_id}")
+async def delete_dataset(dataset_id: str):
+    """Delete a dataset."""
+    if dataset_id not in document_store:
+        raise HTTPException(404, f"Dataset not found: {dataset_id}")
+    
+    doc_count = len(document_store[dataset_id])
+    del document_store[dataset_id]
+    
+    log_event("dataset.deleted", dataset_id=dataset_id, document_count=doc_count)
+    
+    return {
+        "dataset_id": dataset_id,
+        "message": f"Dataset deleted successfully ({doc_count} documents removed)"
     }
 
 @app.post("/ask")
