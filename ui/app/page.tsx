@@ -34,6 +34,18 @@ type SearchResult = {
   [key: string]: string | number | boolean | null | undefined;
 };
 
+type ChatMessage = {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+};
+
+type ModelChat = {
+  messages: ChatMessage[];
+  isStreaming: boolean;
+  currentResponse: string;
+};
+
 // ---------------- Config ----------------
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "/backend");
 
@@ -55,7 +67,12 @@ export default function Page() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
 
-  // Embedding functionality (new)
+  // Interactive chat functionality (new)
+  const [activeModel, setActiveModel] = useState<string | null>(null);
+  const [modelChats, setModelChats] = useState<Record<string, ModelChat>>({});
+  const [interactivePrompt, setInteractivePrompt] = useState<string>("");
+
+  // Embedding functionality (existing)
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
@@ -68,7 +85,7 @@ export default function Page() {
   const [datasetId, setDatasetId] = useState<string>("");
   const [textField, setTextField] = useState<string>("text");
 
-  // --- NEW: freeze the model/dataset/query that produced current results
+  // Search context for results display
   const [searchContext, setSearchContext] = useState<{
     model: string;
     dataset: string;
@@ -77,7 +94,9 @@ export default function Page() {
   } | null>(null);
 
   const streamAbortRef = useRef<AbortController | null>(null);
+  const interactiveAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
 
   // Guard against out-of-order search responses
   const requestIdRef = useRef(0);
@@ -94,6 +113,151 @@ export default function Page() {
     },
     []
   );
+
+  // -------- Interactive Chat Functions --------
+  const openModelChat = useCallback((model: string) => {
+    setActiveModel(model);
+    if (!modelChats[model]) {
+      // Initialize chat with the original prompt and response if available
+      const initialMessages: ChatMessage[] = [];
+      
+      // Add the original prompt if it exists
+      if (prompt.trim()) {
+        initialMessages.push({
+          role: "user",
+          content: prompt.trim(),
+          timestamp: startedAt || Date.now()
+        });
+      }
+      
+      // Add the model's response if it exists and has content
+      const modelAnswer = answers[model];
+      if (modelAnswer?.answer && !modelAnswer.error) {
+        initialMessages.push({
+          role: "assistant",
+          content: modelAnswer.answer,
+          timestamp: (startedAt || Date.now()) + (modelAnswer.latency_ms || 1000)
+        });
+      }
+      
+      setModelChats(prev => ({
+        ...prev,
+        [model]: { 
+          messages: initialMessages, 
+          isStreaming: false, 
+          currentResponse: "" 
+        }
+      }));
+    }
+  }, [modelChats, prompt, answers, startedAt]);
+
+  const closeModelChat = useCallback(() => {
+    setActiveModel(null);
+    interactiveAbortRef.current?.abort();
+  }, []);
+
+  const sendInteractiveMessage = useCallback(async () => {
+    if (!activeModel || !interactivePrompt.trim()) return;
+
+    const message = interactivePrompt.trim();
+    setInteractivePrompt("");
+
+    // Add user message
+    setModelChats(prev => ({
+      ...prev,
+      [activeModel]: {
+        ...prev[activeModel],
+        messages: [
+          ...prev[activeModel].messages,
+          { role: "user", content: message, timestamp: Date.now() }
+        ],
+        isStreaming: true,
+        currentResponse: ""
+      }
+    }));
+
+    // Abort any existing stream
+    interactiveAbortRef.current?.abort();
+    const controller = new AbortController();
+    interactiveAbortRef.current = controller;
+
+    try {
+      // Build conversation history for context
+      const currentChat = modelChats[activeModel];
+      const conversationHistory = [
+        ...currentChat.messages,
+        { role: "user" as const, content: message, timestamp: Date.now() }
+      ];
+
+      // Format messages for the new API endpoint
+      const apiMessages = conversationHistory.map(msg => ({
+        role: msg.role,
+        content: msg.content
+      }));
+
+      // Use the new OpenAI-compatible endpoint
+      const body = JSON.stringify({
+        model: activeModel,
+        messages: apiMessages,
+        temperature: modelParams[activeModel]?.temperature ?? globalTemp,
+        max_tokens: modelParams[activeModel]?.max_tokens ?? globalMax,
+        stream: false
+      });
+
+      const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(errorData.detail || `HTTP ${res.status}`);
+      }
+
+      const result = await res.json();
+      const assistantMessage = result.choices[0]?.message?.content || "No response";
+
+      // Add assistant message
+      setModelChats(prev => ({
+        ...prev,
+        [activeModel]: {
+          ...prev[activeModel],
+          messages: [
+            ...prev[activeModel].messages,
+            { role: "assistant", content: assistantMessage, timestamp: Date.now() }
+          ],
+          isStreaming: false,
+          currentResponse: ""
+        }
+      }));
+
+    } catch (err: unknown) {
+      const isAbort = err instanceof DOMException && err.name === "AbortError";
+      if (!isAbort) {
+        console.error(err);
+        setModelChats(prev => ({
+          ...prev,
+          [activeModel]: {
+            ...prev[activeModel],
+            isStreaming: false,
+            currentResponse: "",
+            messages: [
+              ...prev[activeModel].messages,
+              { 
+                role: "assistant", 
+                content: `Error: ${err instanceof Error ? err.message : "Unknown error"}`, 
+                timestamp: Date.now() 
+              }
+            ]
+          }
+        }));
+      }
+    } finally {
+      interactiveAbortRef.current = null;
+    }
+  }, [activeModel, interactivePrompt, modelParams, globalTemp, globalMax, globalMin, modelChats]);
 
   // -------- Load providers/models once --------
   useEffect(() => {
@@ -146,7 +310,7 @@ export default function Page() {
   const selectAll = () => setSelected(allModels);
   const clearAll = () => setSelected([]);
 
-  // -------- Embedding helpers (new) --------
+  // -------- Embedding helpers (existing) --------
   const toggleEmbeddingModel = (m: string) =>
     setSelectedEmbeddingModels((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
 
@@ -168,7 +332,6 @@ export default function Page() {
 
       setUploadingDataset(true);
 
-      // Upload dataset with each selected embedding model
       const uploadPromises = selectedEmbeddingModels.map(async (embeddingModel) => {
         const res = await fetch(`${API_BASE}/upload-dataset`, {
           method: "POST",
@@ -221,7 +384,6 @@ export default function Page() {
       return;
     }
 
-    // Snapshot inputs so UI changes during the request won't affect in-flight search
     const snapshot = {
       query: searchQuery,
       dataset: selectedDataset,
@@ -230,7 +392,7 @@ export default function Page() {
     };
 
     setIsSearching(true);
-    const myId = ++requestIdRef.current; // bump request id for race protection
+    const myId = ++requestIdRef.current;
 
     try {
       const res = await fetch(`${API_BASE}/search`, {
@@ -251,10 +413,9 @@ export default function Page() {
 
       const result = await res.json();
 
-      // Apply only if this is the latest request
       if (myId === requestIdRef.current) {
         setSearchResults(result.results || []);
-        setSearchContext(snapshot); // freeze label to executed model
+        setSearchContext(snapshot);
       }
     } catch (err) {
       console.error("Search failed:", err);
@@ -385,21 +546,26 @@ export default function Page() {
     }
   }, [canRun, prompt, selected, resetRun, globalTemp, globalMax, globalMin, modelParams]);
 
-  // Keyboard: Cmd/Ctrl + Enter to run
+  // Keyboard shortcuts
   useEffect(() => {
     const onKey = (evt: KeyboardEvent) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
-        if (activeTab === "chat" && canRun) {
+        if (activeModel && interactivePrompt.trim()) {
+          void sendInteractiveMessage();
+        } else if (activeTab === "chat" && canRun) {
           void runPrompt();
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
         }
       }
+      if (evt.key === "Escape" && activeModel) {
+        closeModelChat();
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [canRun, runPrompt, activeTab, searchQuery, performSearch]);
+  }, [canRun, runPrompt, activeTab, searchQuery, performSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
 
   // Small UX helpers
   const anyErrors = useMemo(() => Object.values(answers).some((a) => a?.error), [answers]);
@@ -412,6 +578,105 @@ export default function Page() {
 
   return (
     <div className="min-h-screen grid grid-rows-[auto_auto_1fr_auto] gap-6 p-6 sm:p-8 bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      {/* Interactive Chat Modal */}
+      {activeModel && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-4xl h-[80vh] max-h-[800px] flex flex-col border border-zinc-200 dark:border-zinc-700">
+            {/* Chat Header */}
+            <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-700">
+              <h2 className="text-lg font-semibold">
+                Chat with <span className="font-mono text-orange-600 dark:text-orange-400">{activeModel}</span>
+              </h2>
+              <button
+                onClick={closeModelChat}
+                className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Chat Messages */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {modelChats[activeModel]?.messages.map((message, index) => {
+                // Check if this is from the original comparison (first user message matches original prompt)
+                const isFromOriginalRun = index <= 1 && prompt.trim() && message.content === prompt.trim();
+                const isOriginalResponse = index === 1 && modelChats[activeModel]?.messages[0]?.content === prompt.trim();
+                
+                return (
+                  <div
+                    key={index}
+                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                  >
+                    <div className="max-w-[80%] space-y-1">
+                      {(isFromOriginalRun || isOriginalResponse) && (
+                        <div className="text-xs text-zinc-500 dark:text-zinc-400 px-2">
+                          From comparison run
+                        </div>
+                      )}
+                      <div
+                        className={`rounded-2xl px-4 py-2 ${
+                          message.role === "user"
+                            ? "bg-orange-600 text-white"
+                            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
+                        }`}
+                      >
+                        <pre className="whitespace-pre-wrap text-sm">{message.content}</pre>
+                        <div className="text-xs opacity-70 mt-1">
+                          {new Date(message.timestamp).toLocaleTimeString()}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Current streaming response */}
+              {modelChats[activeModel]?.isStreaming && modelChats[activeModel]?.currentResponse && (
+                <div className="flex justify-start">
+                  <div className="max-w-[80%] rounded-2xl px-4 py-2 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
+                    <pre className="whitespace-pre-wrap text-sm">{modelChats[activeModel].currentResponse}</pre>
+                    <div className="text-xs opacity-70 mt-1">Typing...</div>
+                  </div>
+                </div>
+              )}
+
+              <div ref={chatBottomRef} />
+            </div>
+
+            {/* Chat Input */}
+            <div className="p-4 border-t border-zinc-200 dark:border-zinc-700">
+              <div className="flex gap-3">
+                <textarea
+                  value={interactivePrompt}
+                  onChange={(e) => setInteractivePrompt(e.target.value)}
+                  placeholder="Type your message..."
+                  rows={2}
+                  className="flex-1 rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-800 resize-none"
+                  onKeyDown={(e) => {
+                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                      e.preventDefault();
+                      void sendInteractiveMessage();
+                    }
+                  }}
+                />
+                <button
+                  onClick={sendInteractiveMessage}
+                  disabled={!interactivePrompt.trim() || modelChats[activeModel]?.isStreaming}
+                  className="px-6 py-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
+                >
+                  Send
+                </button>
+              </div>
+              <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
+                Press Cmd/Ctrl + Enter to send • Esc to close
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
@@ -597,15 +862,26 @@ export default function Page() {
             {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => (
               <div
                 key={model}
-                className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm"
+                className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
+                onClick={() => openModelChat(model)}
               >
                 <div className="flex items-center justify-between mb-2">
                   <h2 className="text-sm font-semibold font-mono">{model}</h2>
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                    {error ? "⌘ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                      {error ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
+                    </span>
+                    <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                      <svg className="w-4 h-4 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.001 8.001 0 01-7.93-6.94c-.04-.24-.04-.46-.04-.68l.01-.08c.05-4.345 3.578-7.88 7.93-7.93.24 0 .46.04.68.04.08 0 .16-.01.24-.01" />
+                      </svg>
+                    </div>
+                  </div>
                 </div>
                 <pre className="whitespace-pre-wrap text-sm">{error ? error : answer}</pre>
+                <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                  Click to continue chatting with this model
+                </div>
               </div>
             ))}
             <div ref={bottomRef} />
