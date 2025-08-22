@@ -4,3 +4,4 @@ httpx
 pydantic
 pyyaml
 numpy
+pydantic_settings
