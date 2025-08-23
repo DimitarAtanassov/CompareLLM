@@ -1,65 +1,32 @@
 "use client";
 
+import { ChatControls } from "@/components/chat/ChatControls";
+import { ChatResults } from "@/components/chat/ChatResults";
+import { InteractiveChatModal } from "@/components/chat/InteractiveChatModal";
+import { DatasetManager } from "@/components/embedding/DatasetManager";
+import { DatasetUpload } from "@/components/embedding/DatasetUpload";
+import { EmbeddingModelSelector } from "@/components/embedding/EmbeddingModelSelector";
+import { SearchInterface } from "@/components/embedding/SearchInterface";
+import { SearchResults } from "@/components/embedding/SearchResults";
+import { Footer } from "@/components/Footer";
+import { Header } from "@/components/Header";
+import { TabNavigation } from "@/components/TabNavigation";
+import { useDatasets } from "@/hooks/useDatasets";
+import { useProviders } from "@/hooks/useProviders";
+import { AskAnswers, ChatMessage, ModelChat, ModelParamsMap, PerModelParam, SearchResult, StreamEvent } from "@/types";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-// ---------------- Types kept in sync with your backend ----------------
-type ProviderInfo = {
-  name: string;
-  type: string;
-  base_url: string;
-  models: string[];
-  embedding_models: string[];
-  auth_required: boolean;
-};
 
-type PerModelParam = { temperature?: number; max_tokens?: number; min_tokens?: number };
-type ModelParamsMap = Record<string, PerModelParam>;
-
-type ProvidersResp = { providers: ProviderInfo[] };
-type AskAnswers = Record<string, { answer?: string; error?: string; latency_ms?: number }>;
-
-type StreamEvent =
-  | { type: "meta"; models: string[] }
-  | { type: "chunk"; model: string; answer?: string; error?: string; latency_ms: number }
-  | { type: "done" };
-
-type Dataset = {
-  dataset_id: string;
-  document_count: number;
-  sample_fields: string[];
-};
-
-type SearchResult = {
-  similarity_score: number;
-  [key: string]: string | number | boolean | null | undefined;
-};
-
-type ChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-};
-
-type ModelChat = {
-  messages: ChatMessage[];
-  isStreaming: boolean;
-  currentResponse: string;
-};
-
-// ---------------- Config ----------------
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "/backend");
 
-// ---------------- Page ----------------
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
   
-  // Providers and models
-  const [loadingProviders, setLoadingProviders] = useState(false);
-  const [providers, setProviders] = useState<ProviderInfo[]>([]);
-  const [allModels, setAllModels] = useState<string[]>([]);
-  const [allEmbeddingModels, setAllEmbeddingModels] = useState<string[]>([]);
+  // Use custom hooks
+  const { loadingProviders, providers, allModels, allEmbeddingModels } = useProviders();
+  const { datasets, loadDatasets, deleteDataset } = useDatasets();
 
-  // Chat functionality (existing)
+  // Chat functionality
   const [selected, setSelected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
@@ -67,13 +34,12 @@ export default function Page() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
 
-  // Interactive chat functionality (new)
+  // Interactive chat functionality
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [modelChats, setModelChats] = useState<Record<string, ModelChat>>({});
   const [interactivePrompt, setInteractivePrompt] = useState<string>("");
 
-  // Embedding functionality (existing)
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  // Embedding functionality
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
   const [selectedSearchModel, setSelectedSearchModel] = useState<string>("");
@@ -85,7 +51,7 @@ export default function Page() {
   const [datasetId, setDatasetId] = useState<string>("");
   const [textField, setTextField] = useState<string>("text");
 
-  // Search context for results display
+  // Search context
   const [searchContext, setSearchContext] = useState<{
     model: string;
     dataset: string;
@@ -93,20 +59,33 @@ export default function Page() {
     startedAt: number;
   } | null>(null);
 
+  // Refs
   const streamAbortRef = useRef<AbortController | null>(null);
   const interactiveAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null);
-
-  // Guard against out-of-order search responses
   const requestIdRef = useRef(0);
 
-  // global + per-model params
+  // Parameters
   const [modelParams, setModelParams] = useState<ModelParamsMap>({});
   const [globalTemp, setGlobalTemp] = useState<number>(0.7);
   const [globalMax, setGlobalMax] = useState<number>(8192);
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
 
+  // Set initial embedding model
+  useEffect(() => {
+    if (allEmbeddingModels.length > 0 && !selectedSearchModel) {
+      setSelectedSearchModel(allEmbeddingModels[0]);
+    }
+  }, [allEmbeddingModels, selectedSearchModel]);
+
+  // Load datasets when switching to embedding tab
+  useEffect(() => {
+    if (activeTab === "embedding") {
+      loadDatasets();
+    }
+  }, [activeTab, loadDatasets]);
+
+  // Helper functions
   const updateParam = useCallback(
     (model: string, key: keyof PerModelParam, value: number | undefined) => {
       setModelParams((prev) => ({ ...prev, [model]: { ...(prev[model] || {}), [key]: value } }));
@@ -114,14 +93,32 @@ export default function Page() {
     []
   );
 
-  // -------- Interactive Chat Functions --------
+  const toggleModel = (m: string) =>
+    setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+
+  const selectAll = () => setSelected(allModels);
+  const clearAll = () => setSelected([]);
+
+  const toggleEmbeddingModel = (m: string) =>
+    setSelectedEmbeddingModels((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
+
+  const selectAllEmbedding = () => setSelectedEmbeddingModels(allEmbeddingModels);
+  const clearAllEmbedding = () => setSelectedEmbeddingModels([]);
+
+  const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
+
+  const resetRun = useCallback(() => {
+    setAnswers(Object.fromEntries(selected.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])));
+    setStartedAt(Date.now());
+    setEndedAt(null);
+  }, [selected]);
+
+  // Interactive chat functions
   const openModelChat = useCallback((model: string) => {
     setActiveModel(model);
     if (!modelChats[model]) {
-      // Initialize chat with the original prompt and response if available
       const initialMessages: ChatMessage[] = [];
       
-      // Add the original prompt if it exists
       if (prompt.trim()) {
         initialMessages.push({
           role: "user",
@@ -130,7 +127,6 @@ export default function Page() {
         });
       }
       
-      // Add the model's response if it exists and has content
       const modelAnswer = answers[model];
       if (modelAnswer?.answer && !modelAnswer.error) {
         initialMessages.push({
@@ -162,7 +158,6 @@ export default function Page() {
     const message = interactivePrompt.trim();
     setInteractivePrompt("");
 
-    // Add user message
     setModelChats(prev => ({
       ...prev,
       [activeModel]: {
@@ -176,26 +171,22 @@ export default function Page() {
       }
     }));
 
-    // Abort any existing stream
     interactiveAbortRef.current?.abort();
     const controller = new AbortController();
     interactiveAbortRef.current = controller;
 
     try {
-      // Build conversation history for context
       const currentChat = modelChats[activeModel];
       const conversationHistory = [
         ...currentChat.messages,
         { role: "user" as const, content: message, timestamp: Date.now() }
       ];
 
-      // Format messages for the new API endpoint
       const apiMessages = conversationHistory.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
 
-      // Use the new OpenAI-compatible endpoint
       const body = JSON.stringify({
         model: activeModel,
         messages: apiMessages,
@@ -219,7 +210,6 @@ export default function Page() {
       const result = await res.json();
       const assistantMessage = result.choices[0]?.message?.content || "No response";
 
-      // Add assistant message
       setModelChats(prev => ({
         ...prev,
         [activeModel]: {
@@ -257,203 +247,9 @@ export default function Page() {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, modelParams, globalTemp, globalMax, globalMin, modelChats]);
+  }, [activeModel, interactivePrompt, modelParams, globalTemp, globalMax, modelChats]);
 
-  // -------- Load providers/models once --------
-  useEffect(() => {
-    const load = async () => {
-      setLoadingProviders(true);
-      try {
-        const res = await fetch(`${API_BASE}/providers`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Failed to load providers: ${res.statusText}`);
-        const data = (await res.json()) as ProvidersResp;
-        setProviders(data.providers);
-        const models = [...new Set(data.providers.flatMap((p) => p.models))].sort();
-        const embeddingModels = [...new Set(data.providers.flatMap((p) => p.embedding_models || []))].sort();
-        setAllModels(models);
-        setAllEmbeddingModels(embeddingModels);
-        if (embeddingModels.length > 0) {
-          setSelectedSearchModel(embeddingModels[0]);
-        }
-      } catch (err) {
-        console.error(err);
-      } finally {
-        setLoadingProviders(false);
-      }
-    };
-    load();
-  }, []);
-
-  // Load datasets
-  const loadDatasets = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/datasets`);
-      if (res.ok) {
-        const data = await res.json();
-        setDatasets(data.datasets || []);
-      }
-    } catch (err) {
-      console.error("Failed to load datasets:", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === "embedding") {
-      loadDatasets();
-    }
-  }, [activeTab, loadDatasets]);
-
-  // -------- Chat helpers (existing) --------
-  const toggleModel = (m: string) =>
-    setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
-
-  const selectAll = () => setSelected(allModels);
-  const clearAll = () => setSelected([]);
-
-  // -------- Embedding helpers (existing) --------
-  const toggleEmbeddingModel = (m: string) =>
-    setSelectedEmbeddingModels((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
-
-  const selectAllEmbedding = () => setSelectedEmbeddingModels(allEmbeddingModels);
-  const clearAllEmbedding = () => setSelectedEmbeddingModels([]);
-
-  const uploadDataset = useCallback(async () => {
-    if (!jsonInput.trim() || !datasetId.trim() || selectedEmbeddingModels.length === 0) {
-      alert("Please provide dataset ID, JSON data, and select at least one embedding model.");
-      return;
-    }
-
-    try {
-      const documents = JSON.parse(jsonInput);
-      if (!Array.isArray(documents)) {
-        alert("JSON must be an array of documents.");
-        return;
-      }
-
-      setUploadingDataset(true);
-
-      const uploadPromises = selectedEmbeddingModels.map(async (embeddingModel) => {
-        const res = await fetch(`${API_BASE}/upload-dataset`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dataset_id: datasetId,
-            documents,
-            embedding_model: embeddingModel,
-            text_field: textField,
-          }),
-        });
-
-        if (!res.ok) {
-          const error = await res.text();
-          throw new Error(`${embeddingModel}: ${error}`);
-        }
-
-        return await res.json();
-      });
-
-      const results = await Promise.allSettled(uploadPromises);
-      
-      const successful = results.filter(r => r.status === 'fulfilled').length;
-      const failed = results.filter(r => r.status === 'rejected').length;
-      
-      let message = `Successfully uploaded with ${successful} embedding model(s).`;
-      if (failed > 0) {
-        const errors = results
-          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
-          .map(r => r.reason.message)
-          .join('\n');
-        message += `\n\nFailed with ${failed} model(s):\n${errors}`;
-      }
-      
-      alert(message);
-      setJsonInput("");
-      setDatasetId("");
-      await loadDatasets();
-    } catch (err) {
-      console.error("Upload failed:", err);
-      alert(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    } finally {
-      setUploadingDataset(false);
-    }
-  }, [jsonInput, datasetId, selectedEmbeddingModels, textField, loadDatasets]);
-
-  const performSearch = useCallback(async () => {
-    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
-      alert("Please provide search query, select a dataset, and select a search model.");
-      return;
-    }
-
-    const snapshot = {
-      query: searchQuery,
-      dataset: selectedDataset,
-      model: selectedSearchModel,
-      startedAt: Date.now(),
-    };
-
-    setIsSearching(true);
-    const myId = ++requestIdRef.current;
-
-    try {
-      const res = await fetch(`${API_BASE}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: snapshot.query,
-          embedding_model: snapshot.model,
-          dataset_id: snapshot.dataset,
-          top_k: 5,
-        }),
-      });
-
-      if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error);
-      }
-
-      const result = await res.json();
-
-      if (myId === requestIdRef.current) {
-        setSearchResults(result.results || []);
-        setSearchContext(snapshot);
-      }
-    } catch (err) {
-      console.error("Search failed:", err);
-      if (myId === requestIdRef.current) {
-        alert(`Search failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-        setSearchResults([]);
-        setSearchContext(null);
-      }
-    } finally {
-      if (myId === requestIdRef.current) setIsSearching(false);
-    }
-  }, [searchQuery, selectedDataset, selectedSearchModel]);
-
-  const deleteDataset = useCallback(async (id: string) => {
-    if (!confirm(`Are you sure you want to delete dataset "${id}"?`)) return;
-
-    try {
-      const res = await fetch(`${API_BASE}/datasets/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        await loadDatasets();
-        if (selectedDataset === id) {
-          setSelectedDataset("");
-        }
-      }
-    } catch (err) {
-      console.error("Delete failed:", err);
-    }
-  }, [loadDatasets, selectedDataset]);
-
-  const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
-
-  const resetRun = useCallback(() => {
-    setAnswers(Object.fromEntries(selected.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])));
-    setStartedAt(Date.now());
-    setEndedAt(null);
-  }, [selected]);
-
-  // -------- Streaming runner (JSONL) --------
+  // Streaming runner
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
 
@@ -546,6 +342,129 @@ export default function Page() {
     }
   }, [canRun, prompt, selected, resetRun, globalTemp, globalMax, globalMin, modelParams]);
 
+  // Upload dataset
+  const uploadDataset = useCallback(async () => {
+    if (!jsonInput.trim() || !datasetId.trim() || selectedEmbeddingModels.length === 0) {
+      alert("Please provide dataset ID, JSON data, and select at least one embedding model.");
+      return;
+    }
+
+    try {
+      const documents = JSON.parse(jsonInput);
+      if (!Array.isArray(documents)) {
+        alert("JSON must be an array of documents.");
+        return;
+      }
+
+      setUploadingDataset(true);
+
+      const uploadPromises = selectedEmbeddingModels.map(async (embeddingModel) => {
+        const res = await fetch(`${API_BASE}/upload-dataset`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            dataset_id: datasetId,
+            documents,
+            embedding_model: embeddingModel,
+            text_field: textField,
+          }),
+        });
+
+        if (!res.ok) {
+          const error = await res.text();
+          throw new Error(`${embeddingModel}: ${error}`);
+        }
+
+        return await res.json();
+      });
+
+      const results = await Promise.allSettled(uploadPromises);
+      
+      const successful = results.filter(r => r.status === 'fulfilled').length;
+      const failed = results.filter(r => r.status === 'rejected').length;
+      
+      let message = `Successfully uploaded with ${successful} embedding model(s).`;
+      if (failed > 0) {
+        const errors = results
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map(r => r.reason.message)
+          .join('\n');
+        message += `\n\nFailed with ${failed} model(s):\n${errors}`;
+      }
+      
+      alert(message);
+      setJsonInput("");
+      setDatasetId("");
+      await loadDatasets();
+    } catch (err) {
+      console.error("Upload failed:", err);
+      alert(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setUploadingDataset(false);
+    }
+  }, [jsonInput, datasetId, selectedEmbeddingModels, textField, loadDatasets]);
+
+  // Perform search
+  const performSearch = useCallback(async () => {
+    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
+      alert("Please provide search query, select a dataset, and select a search model.");
+      return;
+    }
+
+    const snapshot = {
+      query: searchQuery,
+      dataset: selectedDataset,
+      model: selectedSearchModel,
+      startedAt: Date.now(),
+    };
+
+    setIsSearching(true);
+    const myId = ++requestIdRef.current;
+
+    try {
+      const res = await fetch(`${API_BASE}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: snapshot.query,
+          embedding_model: snapshot.model,
+          dataset_id: snapshot.dataset,
+          top_k: 5,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error);
+      }
+
+      const result = await res.json();
+
+      if (myId === requestIdRef.current) {
+        setSearchResults(result.results || []);
+        setSearchContext(snapshot);
+      }
+    } catch (err) {
+      console.error("Search failed:", err);
+      if (myId === requestIdRef.current) {
+        alert(`Search failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setSearchResults([]);
+        setSearchContext(null);
+      }
+    } finally {
+      if (myId === requestIdRef.current) setIsSearching(false);
+    }
+  }, [searchQuery, selectedDataset, selectedSearchModel]);
+
+  // Handle dataset selection change
+  const handleSelectedDatasetChange = useCallback((dataset: string) => {
+    setSelectedDataset(dataset);
+    if (dataset !== selectedDataset) {
+      setSearchResults([]);
+      setSearchContext(null);
+    }
+  }, [selectedDataset]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (evt: KeyboardEvent) => {
@@ -567,7 +486,7 @@ export default function Page() {
     return () => window.removeEventListener("keydown", onKey);
   }, [canRun, runPrompt, activeTab, searchQuery, performSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
 
-  // Small UX helpers
+  // Computed values
   const anyErrors = useMemo(() => Object.values(answers).some((a) => a?.error), [answers]);
   const elapsedMs = useMemo(() => {
     if (!startedAt) return 0;
@@ -579,599 +498,131 @@ export default function Page() {
   return (
     <div className="min-h-screen grid grid-rows-[auto_auto_1fr_auto] gap-6 p-6 sm:p-8 bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       {/* Interactive Chat Modal */}
-      {activeModel && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl w-full max-w-4xl h-[80vh] max-h-[800px] flex flex-col border border-zinc-200 dark:border-zinc-700">
-            {/* Chat Header */}
-            <div className="flex items-center justify-between p-4 border-b border-zinc-200 dark:border-zinc-700">
-              <h2 className="text-lg font-semibold">
-                Chat with <span className="font-mono text-orange-600 dark:text-orange-400">{activeModel}</span>
-              </h2>
-              <button
-                onClick={closeModelChat}
-                className="p-2 rounded-lg hover:bg-zinc-100 dark:hover:bg-zinc-800 transition"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-
-            {/* Chat Messages */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {modelChats[activeModel]?.messages.map((message, index) => {
-                // Check if this is from the original comparison (first user message matches original prompt)
-                const isFromOriginalRun = index <= 1 && prompt.trim() && message.content === prompt.trim();
-                const isOriginalResponse = index === 1 && modelChats[activeModel]?.messages[0]?.content === prompt.trim();
-                
-                return (
-                  <div
-                    key={index}
-                    className={`flex ${message.role === "user" ? "justify-end" : "justify-start"}`}
-                  >
-                    <div className="max-w-[80%] space-y-1">
-                      {(isFromOriginalRun || isOriginalResponse) && (
-                        <div className="text-xs text-zinc-500 dark:text-zinc-400 px-2">
-                          From comparison run
-                        </div>
-                      )}
-                      <div
-                        className={`rounded-2xl px-4 py-2 ${
-                          message.role === "user"
-                            ? "bg-orange-600 text-white"
-                            : "bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100"
-                        }`}
-                      >
-                        <pre className="whitespace-pre-wrap text-sm">{message.content}</pre>
-                        <div className="text-xs opacity-70 mt-1">
-                          {new Date(message.timestamp).toLocaleTimeString()}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {/* Current streaming response */}
-              {modelChats[activeModel]?.isStreaming && modelChats[activeModel]?.currentResponse && (
-                <div className="flex justify-start">
-                  <div className="max-w-[80%] rounded-2xl px-4 py-2 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
-                    <pre className="whitespace-pre-wrap text-sm">{modelChats[activeModel].currentResponse}</pre>
-                    <div className="text-xs opacity-70 mt-1">Typing...</div>
-                  </div>
-                </div>
-              )}
-
-              <div ref={chatBottomRef} />
-            </div>
-
-            {/* Chat Input */}
-            <div className="p-4 border-t border-zinc-200 dark:border-zinc-700">
-              <div className="flex gap-3">
-                <textarea
-                  value={interactivePrompt}
-                  onChange={(e) => setInteractivePrompt(e.target.value)}
-                  placeholder="Type your message..."
-                  rows={2}
-                  className="flex-1 rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-800 resize-none"
-                  onKeyDown={(e) => {
-                    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                      e.preventDefault();
-                      void sendInteractiveMessage();
-                    }
-                  }}
-                />
-                <button
-                  onClick={sendInteractiveMessage}
-                  disabled={!interactivePrompt.trim() || modelChats[activeModel]?.isStreaming}
-                  className="px-6 py-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
-                >
-                  Send
-                </button>
-              </div>
-              <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
-                Press Cmd/Ctrl + Enter to send • Esc to close
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      <InteractiveChatModal
+        activeModel={activeModel}
+        modelChats={modelChats}
+        interactivePrompt={interactivePrompt}
+        onInteractivePromptChange={setInteractivePrompt}
+        onSendMessage={sendInteractiveMessage}
+        onCloseChat={closeModelChat}
+        originalPrompt={prompt}
+      />
 
       {/* Header */}
-      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
-        <div>
-          <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-orange-600 dark:text-orange-400">
-            Multi-LLM AI Platform
-          </h1>
-          <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Chat with multiple models and perform semantic search with embeddings.
-          </p>
-        </div>
-        <div className="text-sm text-zinc-500 dark:text-zinc-400">
-          {loadingProviders ? "Loading providers…" : `${providers.length} provider(s), ${allModels.length} chat model(s), ${allEmbeddingModels.length} embedding model(s)`}
-        </div>
-      </header>
+      <Header
+        loadingProviders={loadingProviders}
+        providers={providers}
+        allModelsCount={allModels.length}
+        allEmbeddingModelsCount={allEmbeddingModels.length}
+      />
 
       {/* Tab Navigation */}
-      <nav className="flex border-b border-zinc-200 dark:border-zinc-800">
-        <button
-          onClick={() => setActiveTab("chat")}
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition ${
-            activeTab === "chat"
-              ? "border-orange-500 text-orange-600 dark:text-orange-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-          }`}
-        >
-          Chat Models
-        </button>
-        <button
-          onClick={() => setActiveTab("embedding")}
-          className={`px-6 py-3 text-sm font-medium border-b-2 transition ${
-            activeTab === "embedding"
-              ? "border-orange-500 text-orange-600 dark:text-orange-400"
-              : "border-transparent text-zinc-500 hover:text-zinc-700 dark:hover:text-zinc-300"
-          }`}
-        >
-          Embeddings
-        </button>
-      </nav>
+      <TabNavigation
+        activeTab={activeTab}
+        setActiveTab={setActiveTab}
+      />
 
       {/* Tab Content */}
       {activeTab === "chat" && (
         <main className="grid grid-cols-1 xl:grid-cols-[360px_1fr] gap-6 items-start">
-          {/* Left rail: Chat Controls */}
-          <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-            <div className="space-y-4">
-              <label className="text-sm font-medium">Prompt</label>
-              <textarea
-                className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                placeholder="Ask your question once. e.g., 'Explain RAG vs fine-tuning for my use case.'"
-                value={prompt}
-                onChange={(evt) => setPrompt(evt.target.value)}
-              />
+          {/* Chat Controls */}
+          <ChatControls
+            prompt={prompt}
+            onPromptChange={setPrompt}
+            allModels={allModels}
+            selected={selected}
+            onToggleModel={toggleModel}
+            onSelectAll={selectAll}
+            onClearAll={clearAll}
+            globalTemp={globalTemp}
+            globalMax={globalMax}
+            globalMin={globalMin}
+            modelParams={modelParams}
+            onGlobalTempChange={setGlobalTemp}
+            onGlobalMaxChange={setGlobalMax}
+            onGlobalMinChange={setGlobalMin}
+            onUpdateParam={updateParam}
+            canRun={canRun}
+            isRunning={isRunning}
+            onRunPrompt={runPrompt}
+          />
 
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Models</label>
-                <div className="flex gap-2 text-xs">
-                  <button
-                    onClick={selectAll}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Select all
-                  </button>
-                  <button
-                    onClick={clearAll}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-
-              <div className="max-h-[280px] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
-                {allModels.length === 0 && (
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400">No models discovered yet.</div>
-                )}
-                {allModels.map((m) => (
-                  <label
-                    key={m}
-                    className="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-400/10"
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
-                      checked={selected.includes(m)}
-                      onChange={() => toggleModel(m)}
-                    />
-                    <span className="text-sm font-mono">{m}</span>
-                  </label>
-                ))}
-              </div>
-
-              {/* Global defaults */}
-              <div className="space-y-3 text-sm">
-                <div>
-                  <label className="block mb-1 font-medium">Global temp</label>
-                  <input
-                    type="number" step={0.1} min={0} max={2}
-                    value={globalTemp}
-                    onChange={(e) => setGlobalTemp(Number(e.target.value))}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 font-medium">Global max_tokens</label>
-                  <input
-                    type="number" min={1}
-                    value={globalMax}
-                    onChange={(e) => setGlobalMax(Number(e.target.value))}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 font-medium">Global min_tokens</label>
-                  <input
-                    type="number" min={1}
-                    value={globalMin ?? ""}
-                    placeholder="optional"
-                    onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-              </div>
-
-              {/* Per-model overrides */}
-              <div className="mt-3 space-y-2">
-                {allModels.map((m) => (
-                  <details
-                    key={m}
-                    className="rounded-lg border border-orange-200 dark:border-orange-500/40 p-2 bg-orange-50/60 dark:bg-orange-400/10"
-                  >
-                    <summary className="cursor-pointer flex items-center justify-between">
-                      <span className="font-mono text-sm">{m}</span>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">Overrides</span>
-                    </summary>
-                    <div className="mt-2 grid grid-cols-3 gap-3 text-sm">
-                      <div>
-                        <label className="block mb-1">temp</label>
-                        <input
-                          type="number" step={0.1} min={0} max={2}
-                          value={modelParams[m]?.temperature ?? ""}
-                          placeholder={`↳ ${globalTemp}`}
-                          onChange={(e) => updateParam(m, "temperature", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="block mb-1">max_tokens</label>
-                        <input
-                          type="number" min={1}
-                          value={modelParams[m]?.max_tokens ?? ""}
-                          placeholder={`↳ ${globalMax}`}
-                          onChange={(e) => updateParam(m, "max_tokens", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="block mb-1">min_tokens</label>
-                        <input
-                          type="number" min={1}
-                          value={modelParams[m]?.min_tokens ?? ""}
-                          placeholder={globalMin ? `↳ ${globalMin}` : "optional"}
-                          onChange={(e) => updateParam(m, "min_tokens", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
-                      </div>
-                    </div>
-                  </details>
-                ))}
-              </div>
-
-              <button
-                onClick={() => void runPrompt()}
-                disabled={!canRun}
-                className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
-              >
-                {isRunning ? "Running…" : "Run prompt"}
-              </button>
-            </div>
-          </section>
-
-          {/* Right rail: Results */}
-          <section className="space-y-4">
-            {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => (
-              <div
-                key={model}
-                className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
-                onClick={() => openModelChat(model)}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-sm font-semibold font-mono">{model}</h2>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {error ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
-                    </span>
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                      <svg className="w-4 h-4 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.001 8.001 0 01-7.93-6.94c-.04-.24-.04-.46-.04-.68l.01-.08c.05-4.345 3.578-7.88 7.93-7.93.24 0 .46.04.68.04.08 0 .16-.01.24-.01" />
-                      </svg>
-                    </div>
-                  </div>
-                </div>
-                <pre className="whitespace-pre-wrap text-sm">{error ? error : answer}</pre>
-                <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                  Click to continue chatting with this model
-                </div>
-              </div>
-            ))}
-            <div ref={bottomRef} />
-          </section>
+          {/* Chat Results */}
+          <ChatResults
+            ref={bottomRef}
+            answers={answers}
+            isRunning={isRunning}
+            onOpenModelChat={openModelChat}
+          />
         </main>
       )}
 
       {activeTab === "embedding" && (
         <main className="grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-6 items-start">
-          {/* Left rail: Embedding Controls */}
+          {/* Embedding Controls */}
           <section className="space-y-6">
-            {/* Embedding Model Selection */}
-            <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold text-orange-600 dark:text-orange-400">Select Embedding Models</h3>
-                <div className="flex gap-2 text-xs">
-                  <button
-                    onClick={selectAllEmbedding}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Select all
-                  </button>
-                  <button
-                    onClick={clearAllEmbedding}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              
-              <div className="max-h-[200px] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 grid grid-cols-1 gap-1">
-                {allEmbeddingModels.length === 0 && (
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400">No embedding models discovered yet.</div>
-                )}
-                {allEmbeddingModels.map((m) => (
-                  <label
-                    key={m}
-                    className="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-400/10"
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
-                      checked={selectedEmbeddingModels.includes(m)}
-                      onChange={() => toggleEmbeddingModel(m)}
-                    />
-                    <span className="text-sm font-mono">{m}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
+            <EmbeddingModelSelector
+              allEmbeddingModels={allEmbeddingModels}
+              selectedEmbeddingModels={selectedEmbeddingModels}
+              onToggleEmbeddingModel={toggleEmbeddingModel}
+              onSelectAllEmbedding={selectAllEmbedding}
+              onClearAllEmbedding={clearAllEmbedding}
+            />
 
-            {/* Dataset Upload */}
-            <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-              <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">Upload Dataset</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Dataset ID</label>
-                  <input
-                    type="text"
-                    value={datasetId}
-                    onChange={(e) => setDatasetId(e.target.value)}
-                    placeholder="my-documents"
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-                
-                <div>
-                  <label className="block text-sm font-medium mb-1">Text Field Name</label>
-                  <input
-                    type="text"
-                    value={textField}
-                    onChange={(e) => setTextField(e.target.value)}
-                    placeholder="text"
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                  />
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
-                    Field containing the text to embed in each document
-                  </p>
-                </div>
+            <DatasetUpload
+              datasetId={datasetId}
+              onDatasetIdChange={setDatasetId}
+              textField={textField}
+              onTextFieldChange={setTextField}
+              selectedEmbeddingModels={selectedEmbeddingModels}
+              jsonInput={jsonInput}
+              onJsonInputChange={setJsonInput}
+              uploadingDataset={uploadingDataset}
+              onUploadDataset={uploadDataset}
+            />
 
-                <div>
-                  <label className="block text-sm font-medium mb-1">Selected Models for Upload</label>
-                  <div className="text-sm text-zinc-600 dark:text-zinc-300">
-                    {selectedEmbeddingModels.length === 0 ? (
-                      <span className="text-zinc-500">No models selected</span>
-                    ) : (
-                      selectedEmbeddingModels.map(model => (
-                        <span key={model} className="inline-block bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400 px-2 py-1 rounded-md text-xs mr-2 mb-1">
-                          {model}
-                        </span>
-                      ))
-                    )}
-                  </div>
-                </div>
+            <SearchInterface
+              selectedSearchModel={selectedSearchModel}
+              onSearchModelChange={setSelectedSearchModel}
+              allEmbeddingModels={allEmbeddingModels}
+              selectedDataset={selectedDataset}
+              onSelectedDatasetChange={handleSelectedDatasetChange}
+              datasets={datasets}
+              searchQuery={searchQuery}
+              onSearchQueryChange={setSearchQuery}
+              isSearching={isSearching}
+              onPerformSearch={performSearch}
+            />
 
-                <div>
-                  <label className="block text-sm font-medium mb-1">JSON Data</label>
-                  <textarea
-                    value={jsonInput}
-                    onChange={(e) => setJsonInput(e.target.value)}
-                    placeholder={`[
-  {"text": "Document 1 content", "title": "Doc 1"},
-  {"text": "Document 2 content", "title": "Doc 2"}
-]`}
-                    rows={8}
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 font-mono text-sm"
-                  />
-                </div>
-
-                <button
-                  onClick={uploadDataset}
-                  disabled={uploadingDataset || !jsonInput.trim() || !datasetId.trim() || selectedEmbeddingModels.length === 0}
-                  className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
-                >
-                  {uploadingDataset ? "Uploading…" : `Upload with ${selectedEmbeddingModels.length} model(s)`}
-                </button>
-              </div>
-            </div>
-
-            {/* Search Interface */}
-            <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-              <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">Semantic Search</h3>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Search Model</label>
-                  <select
-                    value={selectedSearchModel}
-                    onChange={(e) => setSelectedSearchModel(e.target.value)}
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                  >
-                    {allEmbeddingModels.map((model) => (
-                      <option key={model} value={model}>
-                        {model}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1">Dataset</label>
-                  <select
-                    value={selectedDataset}
-                    onChange={(e) => setSelectedDataset(e.target.value)}
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                  >
-                    <option value="">Select a dataset</option>
-                    {datasets.map((dataset) => (
-                      <option key={dataset.dataset_id} value={dataset.dataset_id}>
-                        {dataset.dataset_id} ({dataset.document_count} docs)
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium mb-1">Search Query</label>
-                  <textarea
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="What are you looking for?"
-                    rows={3}
-                    className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-
-                <button
-                  onClick={performSearch}
-                  disabled={isSearching || !searchQuery.trim() || !selectedDataset || !selectedSearchModel}
-                  className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
-                >
-                  {isSearching ? "Searching…" : "Search"}
-                </button>
-              </div>
-            </div>
-
-            {/* Dataset Management */}
-            <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-              <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">Manage Datasets</h3>
-              <div className="space-y-2">
-                {datasets.length === 0 ? (
-                  <p className="text-sm text-zinc-500 dark:text-zinc-400">No datasets uploaded yet.</p>
-                ) : (
-                  datasets.map((dataset) => (
-                    <div
-                      key={dataset.dataset_id}
-                      className="flex items-center justify-between p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50"
-                    >
-                      <div>
-                        <div className="font-mono text-sm">{dataset.dataset_id}</div>
-                        <div className="text-xs text-zinc-500 dark:text-zinc-400">
-                          {dataset.document_count} documents
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => deleteDataset(dataset.dataset_id)}
-                        className="px-3 py-1 text-xs rounded-lg border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
+            <DatasetManager
+              datasets={datasets}
+              onDeleteDataset={deleteDataset}
+            />
           </section>
 
-          {/* Right rail: Search Results */}
-          <section className="space-y-4">
-            {searchResults.length > 0 && (
-              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
-                <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">
-                  Search Results ({searchResults.length})
-                </h3>
-                <div className="space-y-4">
-                  {searchResults.map((result, index) => (
-                    <div
-                      key={index}
-                      className="p-4 rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50"
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold">Result #{index + 1}</span>
-                          <span className="text-xs px-2 py-1 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 font-mono">
-                            {searchContext?.model ?? selectedSearchModel}
-                          </span>
-                        </div>
-                        <span className="text-xs px-2 py-1 rounded-full bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400">
-                          {(result.similarity_score * 100).toFixed(1)}% match
-                        </span>
-                      </div>
-                      <div className="space-y-2 text-sm">
-                        {Object.entries(result).map(([key, value]) => {
-                          if (key === "similarity_score" || key === "embedding" || key.startsWith("_")) return null;
-                          return (
-                            <div key={key}>
-                              <span className="font-medium text-zinc-600 dark:text-zinc-400">{key}:</span>{" "}
-                              <span className="text-zinc-900 dark:text-zinc-100">
-                                {typeof value === "string" && value.length > 200
-                                  ? value.substring(0, 200) + "..."
-                                  : String(value)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {searchResults.length === 0 && searchQuery && !isSearching && (
-              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-8 bg-white dark:bg-zinc-950 shadow-sm text-center">
-                <p className="text-zinc-500 dark:text-zinc-400">No results found for your search query.</p>
-              </div>
-            )}
-
-            {!searchQuery && (
-              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-8 bg-white dark:bg-zinc-950 shadow-sm text-center">
-                <p className="text-zinc-500 dark:text-zinc-400">
-                  Upload a dataset and perform a search to see results here.
-                </p>
-              </div>
-            )}
-          </section>
+          {/* Search Results */}
+          <SearchResults
+            searchResults={searchResults}
+            searchQuery={searchQuery}
+            isSearching={isSearching}
+            searchContext={searchContext}
+            selectedSearchModel={selectedSearchModel}
+          />
         </main>
       )}
 
       {/* Footer */}
-      <footer className="text-xs text-zinc-500 dark:text-zinc-400 flex justify-between">
-        {activeTab === "chat" ? (
-          <>
-            <span>{selected.length} selected</span>
-            {anyErrors && <span className="text-orange-600 dark:text-orange-400">Some models returned errors</span>}
-            {startedAt && (
-              <span>
-                Elapsed: {(elapsedMs / 1000).toFixed(1)}s{isRunning ? " (live)" : ""}
-              </span>
-            )}
-          </>
-        ) : (
-          <>
-            <span>{datasets.length} datasets • {selectedEmbeddingModels.length} embedding models selected</span>
-            <span>
-              {allEmbeddingModels.length} embedding models available
-            </span>
-          </>
-        )}
-      </footer>
+      <Footer
+        activeTab={activeTab}
+        selected={selected}
+        anyErrors={anyErrors}
+        startedAt={startedAt}
+        elapsedMs={elapsedMs}
+        isRunning={isRunning}
+        datasets={datasets}
+        selectedEmbeddingModels={selectedEmbeddingModels}
+        allEmbeddingModelsCount={allEmbeddingModels.length}
+      />
     </div>
   );
 }
