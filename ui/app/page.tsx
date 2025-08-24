@@ -22,9 +22,9 @@ type PerModelParam = {
   top_k?: number;
   top_p?: number;
   stop_sequences?: string[];
-  service_tier?: "auto" | "standard_only";
-  tool_choice_type?: "auto" | "any" | "tool" | "none";
-  user_id?: string;
+  //service_tier?: "auto" | "standard_only";
+  //tool_choice_type?: "auto" | "any" | "tool" | "none";
+  //user_id?: string;
   // OpenAI parameters
   frequency_penalty?: number;
   presence_penalty?: number;
@@ -86,9 +86,9 @@ type EnhancedChatRequest = {
     top_k?: number;
     top_p?: number;
     stop_sequences?: string[];
-    service_tier?: string;
-    tool_choice_type?: string;
-    user_id?: string;
+    //service_tier?: string;
+    //tool_choice_type?: string;
+    //user_id?: string;
   };
   openai_params?: {
     top_p?: number;
@@ -201,34 +201,6 @@ function ProviderParameterEditor({
           </div>
         </div>
 
-        {/* Service Tier */}
-        <div>
-          <label className="block text-xs font-medium mb-1">Service Tier</label>
-          <select
-            value={params.service_tier ?? "auto"}
-            onChange={(e) => updateParam('service_tier', e.target.value)}
-            className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-          >
-            <option value="auto">Auto</option>
-            <option value="standard_only">Standard Only</option>
-          </select>
-        </div>
-
-        {/* Tool Choice */}
-        <div>
-          <label className="block text-xs font-medium mb-1">Tool Choice</label>
-          <select
-            value={params.tool_choice_type ?? "auto"}
-            onChange={(e) => updateParam('tool_choice_type', e.target.value)}
-            className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-          >
-            <option value="auto">Auto</option>
-            <option value="any">Any</option>
-            <option value="none">None</option>
-            <option value="tool">Specific Tool</option>
-          </select>
-        </div>
-
         {/* Stop Sequences */}
         <div>
           <label className="block text-xs font-medium mb-1">Stop Sequences</label>
@@ -242,18 +214,6 @@ function ProviderParameterEditor({
           <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
             Comma-separated sequences that will stop generation
           </p>
-        </div>
-
-        {/* User ID */}
-        <div>
-          <label className="block text-xs font-medium mb-1">User ID (for abuse detection)</label>
-          <input
-            type="text"
-            value={params.user_id ?? ""}
-            onChange={(e) => updateParam('user_id', e.target.value || undefined)}
-            className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-            placeholder="user-123"
-          />
         </div>
       </div>
     );
@@ -500,8 +460,8 @@ export default function Page() {
 
   // Enhanced parameters
   const [modelParams, setModelParams] = useState<ModelParamsMap>({});
-  const [globalTemp, setGlobalTemp] = useState<number>(0.7);
-  const [globalMax, setGlobalMax] = useState<number>(8192);
+  const [globalTemp, setGlobalTemp] = useState<number | undefined>(undefined);
+  const [globalMax, setGlobalMax] = useState<number | undefined>(undefined);
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
   // Always use Enhanced API
   const useEnhancedAPI = true;
@@ -634,10 +594,10 @@ export default function Page() {
         const enhancedRequest: EnhancedChatRequest = {
           messages: apiMessages,
           models: [activeModel],
-          temperature: modelParam.temperature ?? globalTemp,
-          max_tokens: modelParam.max_tokens ?? globalMax,
-          min_tokens: modelParam.min_tokens ?? globalMin,
-        };
+          ...(modelParam.temperature ?? globalTemp) !== undefined && { temperature: (modelParam.temperature ?? globalTemp) },
+          ...(modelParam.max_tokens ?? globalMax) !== undefined && { max_tokens: (modelParam.max_tokens ?? globalMax) },
+          ...(modelParam.min_tokens ?? globalMin) !== undefined && { min_tokens: (modelParam.min_tokens ?? globalMin) },
+        } as EnhancedChatRequest;
 
         // Add provider-specific parameters
         if (providerType === "anthropic") {
@@ -647,9 +607,8 @@ export default function Page() {
             top_k: modelParam.top_k,
             top_p: modelParam.top_p,
             stop_sequences: modelParam.stop_sequences,
-            service_tier: modelParam.service_tier,
-            tool_choice_type: modelParam.tool_choice_type,
-            user_id: modelParam.user_id,
+            // service_tier: modelParam.service_tier,
+            // tool_choice_type: modelParam.tool_choice_type,
           };
         } else if (providerType === "openai") {
           enhancedRequest.openai_params = {
@@ -679,13 +638,16 @@ export default function Page() {
       } else {
         // Use standard OpenAI-compatible API
         endpoint = `${API_BASE}/v1/chat/completions`;
-        body = JSON.stringify({
+        const stdPayload: Record<string, unknown> = {
           model: activeModel,
           messages: apiMessages,
-          temperature: modelParam.temperature ?? globalTemp,
-          max_tokens: modelParam.max_tokens ?? globalMax,
-          stream: false
-        });
+        };
+        const temp = modelParam.temperature ?? globalTemp;
+        const maxTok = modelParam.max_tokens ?? globalMax;
+        if (temp !== undefined) stdPayload.temperature = temp;
+        if (maxTok !== undefined) stdPayload.max_tokens = maxTok;
+        stdPayload.stream = false;
+        body = JSON.stringify(stdPayload);
       }
 
       const res = await fetch(endpoint, {
@@ -945,6 +907,15 @@ export default function Page() {
   }, [selected]);
 
   // -------- Enhanced API runner --------
+  // -------- Enhanced API runner --------
+  function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) out[k] = v;
+    }
+    return out as Partial<T>;
+  }  
+  // 2) Replace your current runEnhancedPrompt with this version (or edit in place)
   const runEnhancedPrompt = useCallback(async () => {
     if (!canRun) return;
 
@@ -952,58 +923,97 @@ export default function Page() {
     resetRun();
 
     try {
-      // Build enhanced request
+      // Build per-model overrides: include only defined keys
+      const perModel: Record<string, Partial<PerModelParam>> = {};
+      for (const m of selected) {
+        const p = modelParams[m] || {};
+        const trimmed = pruneUndefined({
+          temperature: p.temperature,
+          max_tokens: p.max_tokens,
+          min_tokens: p.min_tokens,
+        });
+        if (Object.keys(trimmed).length > 0) perModel[m] = trimmed;
+      }
+
       const enhancedRequest: EnhancedChatRequest = {
         messages: [{ role: "user", content: prompt }],
         models: selected,
-        temperature: globalTemp,
-        max_tokens: globalMax,
-        min_tokens: globalMin,
+        ...(globalTemp !== undefined && { temperature: globalTemp }),
+        ...(globalMax !== undefined && { max_tokens: globalMax }),
+        ...(globalMin !== undefined && { min_tokens: globalMin }),
       };
 
-      // Group models by provider type and add provider-specific params
-      // Group models by provider type and add provider-specific params
+      // 👉 Only attach model_params if there’s at least one override
+      if (Object.keys(perModel).length > 0) {
+        // @ts-expect-error backend supports model_params
+        enhancedRequest.model_params = perModel;
+      }
+
+      // Group models by provider type
       const anthropicModels = selected.filter(m => getProviderType(m) === "anthropic");
       const openaiModels    = selected.filter(m => getProviderType(m) === "openai");
       const geminiModels    = selected.filter(m => getProviderType(m) === "gemini");
       const ollamaModels    = selected.filter(m => getProviderType(m) === "ollama");
 
-      // Collect provider-specific parameters from selected models
+      // For each provider, collect only defined keys across selected models.
       if (anthropicModels.length > 0) {
-        const anthropicParams: NonNullable<EnhancedChatRequest["anthropic_params"]> = {};
-        anthropicModels.forEach(model => {
-          const params = modelParams[model] || {};
-          Object.assign(anthropicParams, {
-            thinking_enabled: params.thinking_enabled,
-            thinking_budget_tokens: params.thinking_budget_tokens,
-            top_k: params.top_k,
-            top_p: params.top_p,
-            stop_sequences: params.stop_sequences,
-            service_tier: params.service_tier,
-            tool_choice_type: params.tool_choice_type,
-            user_id: params.user_id,
-          });
-        });
-        enhancedRequest.anthropic_params = anthropicParams;
+        const merged = pruneUndefined(
+          anthropicModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
+            acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
+            acc.top_k = acc.top_k ?? p.top_k;
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.stop_sequences = acc.stop_sequences ?? p.stop_sequences;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["anthropic_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.anthropic_params = merged;
       }
 
       if (openaiModels.length > 0) {
-        const openaiParams: NonNullable<EnhancedChatRequest["openai_params"]> = {};
-        openaiModels.forEach(model => {
-          const params = modelParams[model] || {};
-          Object.assign(openaiParams, {
-            top_p: params.top_p,
-            frequency_penalty: params.frequency_penalty,
-            presence_penalty: params.presence_penalty,
-            seed: params.seed,
-          });
-        });
-        enhancedRequest.openai_params = openaiParams;
+        const merged = pruneUndefined(
+          openaiModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.frequency_penalty = acc.frequency_penalty ?? p.frequency_penalty;
+            acc.presence_penalty = acc.presence_penalty ?? p.presence_penalty;
+            acc.seed = acc.seed ?? p.seed;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["openai_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.openai_params = merged;
       }
 
-      // If you also want to support Gemini/Ollama later, mirror the same pattern:
-      // const geminiParams: NonNullable<EnhancedChatRequest["gemini_params"]> = {};
-      // const ollamaParams: NonNullable<EnhancedChatRequest["ollama_params"]> = {};
+      if (geminiModels.length > 0) {
+        const merged = pruneUndefined(
+          geminiModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.top_k = acc.top_k ?? p.top_k;
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.candidate_count = acc.candidate_count ?? p.candidate_count;
+            acc.safety_settings = acc.safety_settings ?? p.safety_settings;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["gemini_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.gemini_params = merged;
+      }
+
+      if (ollamaModels.length > 0) {
+        const merged = pruneUndefined(
+          ollamaModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.mirostat = acc.mirostat ?? p.mirostat;
+            acc.mirostat_eta = acc.mirostat_eta ?? p.mirostat_eta;
+            acc.mirostat_tau = acc.mirostat_tau ?? p.mirostat_tau;
+            acc.num_ctx = acc.num_ctx ?? p.num_ctx;
+            acc.repeat_penalty = acc.repeat_penalty ?? p.repeat_penalty;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["ollama_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.ollama_params = merged;
+      }
+
       const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1016,8 +1026,7 @@ export default function Page() {
       }
 
       const result = await res.json();
-      
-      // Process results
+
       const newAnswers: AskAnswers = {};
       for (const model of selected) {
         const modelResult = result.answers[model];
@@ -1030,14 +1039,16 @@ export default function Page() {
 
       setAnswers(newAnswers);
       setEndedAt(Date.now());
-
     } catch (err) {
       console.error("Enhanced API error:", err);
       alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setIsRunning(false);
     }
-  }, [canRun, prompt, selected, resetRun, globalTemp, globalMax, globalMin, modelParams, getProviderType]);
+  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, getProviderType, resetRun]);
+
+
+
 
   // -------- Streaming runner (JSONL) - existing --------
   const runPrompt = useCallback(async () => {
@@ -1068,19 +1079,19 @@ export default function Page() {
     };
 
     try {
-      const body = JSON.stringify({
+      const ndjsonPayload: Record<string, unknown> = {
         prompt,
         models: selected,
-        temperature: globalTemp,
-        max_tokens: globalMax,
-        min_tokens: globalMin,
         model_params: modelParams,
-      });
+      };
+      if (globalTemp !== undefined) ndjsonPayload.temperature = globalTemp;
+      if (globalMax !== undefined) ndjsonPayload.max_tokens = globalMax;
+      if (globalMin !== undefined) ndjsonPayload.min_tokens = globalMin;
 
       const res = await fetch(`${API_BASE}/ask/ndjson`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: JSON.stringify(ndjsonPayload),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
@@ -1270,7 +1281,7 @@ export default function Page() {
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-orange-600 dark:text-orange-400">
-            Enhanced Multi-LLM AI Platform
+            CompareLLM
           </h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             Chat with multiple models using provider-specific parameters and perform semantic search.
@@ -1376,8 +1387,9 @@ export default function Page() {
                   <label className="block mb-1 font-medium">Global temp</label>
                   <input
                     type="number" step={0.1} min={0} max={2}
-                    value={globalTemp}
-                    onChange={(e) => setGlobalTemp(Number(e.target.value))}
+                    value={globalTemp ?? ""}
+                    placeholder="Model default"
+                    onChange={(e) => setGlobalTemp(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
@@ -1385,8 +1397,9 @@ export default function Page() {
                   <label className="block mb-1 font-medium">Global max_tokens</label>
                   <input
                     type="number" min={1}
-                    value={globalMax}
-                    onChange={(e) => setGlobalMax(Number(e.target.value))}
+                    value={globalMax ?? ""}
+                    placeholder="Model default"
+                    onChange={(e) => setGlobalMax(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
@@ -1395,7 +1408,7 @@ export default function Page() {
                   <input
                     type="number" min={1}
                     value={globalMin ?? ""}
-                    placeholder="optional"
+                    placeholder="Model default"
                     onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
@@ -1457,7 +1470,7 @@ export default function Page() {
                               <input
                                 type="number" step={0.1} min={0} max={2}
                                 value={modelParams[m]?.temperature ?? ""}
-                                placeholder={`↳ ${globalTemp}`}
+                                placeholder={`↳ ${globalTemp ?? "backend default"}`}
                                 onChange={(e) => updateParam(m, { 
                                   ...modelParams[m], 
                                   temperature: e.target.value ? Number(e.target.value) : undefined 
@@ -1467,10 +1480,10 @@ export default function Page() {
                             </div>
                             <div>
                               <label className="block mb-1 text-xs font-medium">Max Tokens</label>
-                              <input
+                            <input
                                 type="number" min={1}
                                 value={modelParams[m]?.max_tokens ?? ""}
-                                placeholder={`↳ ${globalMax}`}
+                                placeholder={`↳ ${globalMax ?? "backend default"}`}
                                 onChange={(e) => updateParam(m, { 
                                   ...modelParams[m], 
                                   max_tokens: e.target.value ? Number(e.target.value) : undefined 

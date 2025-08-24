@@ -22,7 +22,7 @@ providers:
     headers: {}
     models:
       - gpt-5
-      - gpt-4
+      - gpt-4o
     embedding_models:
       - text-embedding-3-small
       - text-embedding-3-large

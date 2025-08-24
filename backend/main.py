@@ -225,8 +225,8 @@ def create_app() -> FastAPI:
             enhanced_request = EnhancedChatRequest(
                 messages=chat_messages,
                 models=models,
-                temperature=body.get("temperature", 0.7),
-                max_tokens=body.get("max_tokens", 8192),
+                temperature=body.get("temperature"),
+                max_tokens=body.get("max_tokens"),
                 min_tokens=body.get("min_tokens"),
                 system=body.get("system"),
                 anthropic_params=body.get("anthropic_params"),
@@ -234,7 +234,7 @@ def create_app() -> FastAPI:
                 gemini_params=body.get("gemini_params"),
                 ollama_params=body.get("ollama_params"),
                 provider_params=body.get("provider_params"),
-                model_params=body.get("model_params", {})
+                model_params=body.get("model_params")
             )
             
             # Process request
@@ -285,8 +285,8 @@ def create_app() -> FastAPI:
                 chat_request = ChatRequest(
                     messages=chat_messages,
                     models=[model],
-                    temperature=body.get("temperature", 0.7),
-                    max_tokens=body.get("max_tokens", 8192)
+                    temperature=body.get("temperature"),
+                    max_tokens=body.get("max_tokens"),
                 )
                 
                 # Process
@@ -325,9 +325,9 @@ def create_app() -> FastAPI:
                     chat_request = ChatRequest(
                         prompt=prompt,
                         models=models,
-                        temperature=body.get("temperature", 0.7),
-                        max_tokens=body.get("max_tokens", 8192),
-                        model_params=body.get("model_params", {})
+                        temperature=body.get("temperature"),
+                        max_tokens=body.get("max_tokens"),
+                        model_params=body.get("model_params")
                     )
                 else:
                     # Messages format
@@ -348,9 +348,9 @@ def create_app() -> FastAPI:
                     chat_request = ChatRequest(
                         messages=chat_messages,
                         models=models,
-                        temperature=body.get("temperature", 0.7),
-                        max_tokens=body.get("max_tokens", 8192),
-                        model_params=body.get("model_params", {})
+                        temperature=body.get("temperature"),
+                        max_tokens=body.get("max_tokens"),
+                        model_params=body.get("model_params")
                     )
                 
                 # Process request
