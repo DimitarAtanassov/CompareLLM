@@ -1,21 +1,20 @@
-providers:
-  # Ollama (OpenAI-compatible)
-  ollama:
-    type: openai
-    base_url: http://ollama:11434/v1
-    api_key_env: ""          # none
-    headers: {}
-    models:
-      - llama3.1:8b
-      - qwen2.5:7b-instruct
-      - mistral:7b-instruct
-      - gemma3:1b
-    embedding_models:
-      - nomic-embed-text
-      - all-minilm
-      - mxbai-embed-large
+# Multi-Model Platform Configuration
+# Supports: Anthropic, OpenAI, DeepSeek, Ollama, Gemini
 
-  # OpenAI (ChatGPT)
+providers:
+  # Anthropic Claude Models
+  anthropic:
+    type: anthropic
+    base_url: https://api.anthropic.com
+    api_key_env: ANTHROPIC_API_KEY
+    headers:
+      anthropic-version: "2023-06-01"
+    models:
+      - claude-3-7-sonnet-latest
+      - claude-3-7-haiku-latest
+    embedding_models: []
+
+  # OpenAI GPT Models
   openai:
     type: openai
     base_url: https://api.openai.com/v1
@@ -23,64 +22,58 @@ providers:
     headers: {}
     models:
       - gpt-5
+      - gpt-4
     embedding_models:
       - text-embedding-3-small
       - text-embedding-3-large
       - text-embedding-ada-002
 
-  # DeepSeek (OpenAI-style API)
+  # DeepSeek Models
   deepseek:
-    type: openai
+    type: openai  # DeepSeek uses OpenAI-compatible API
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     headers: {}
     models:
       - deepseek-chat
-      - deepseek-reasoner
+      - deepseek-coder
+    embedding_models: []
 
-  # Gemini (different API/shape)
+  # Ollama Local Models
+  ollama:
+    type: ollama
+    base_url: http://localhost:11434  # Default Ollama port
+    api_key_env: null  # No API key needed for local
+    headers: {}
+    models:
+      - llama2
+      - mistral
+      # - mixtral
+      # - phi
+      # - neural-chat
+      # - starling-lm
+      # - orca-mini
+      # - zephyr
+    embedding_models:
+      - nomic-embed-text
+      - all-minilm
+
+  # Google Gemini Models (optional)
   gemini:
     type: gemini
     base_url: https://generativelanguage.googleapis.com
-    api_key_env: GOOGLE_API_KEY
+    api_key_env: GEMINI_API_KEY
     headers: {}
     models:
-      - gemini-1.5-flash
+      - gemini-pro
+      - gemini-pro-vision
       - gemini-1.5-pro
+      - gemini-1.5-flash
     embedding_models:
-      - text-embedding-004
       - embedding-001
 
-  # Anthropic
-  anthropic:
-    type: anthropic
-    base_url: https://api.anthropic.com
-    api_key_env: ANTHROPIC_API_KEY
-    headers:
-      anthropic-version: "2023-06-01"  # required
-    models:
-      - claude-3-5-haiku-latest
-
-  # Cohere
-  cohere:
-    type: cohere
-    base_url: https://api.cohere.ai
-    api_key_env: COHERE_API_KEY
-    headers: {}
-    embedding_models:
-      - embed-english-v3.0
-      - embed-multilingual-v3.0
-      - embed-english-light-v3.0
-      - embed-multilingual-light-v3.0
-
-  # Voyage AI
-  voyage:
-    type: voyage
-    base_url: https://api.voyageai.com
-    api_key_env: VOYAGE_API_KEY
-    headers: {}
-    embedding_models:
-      - voyage-large-2
-      - voyage-code-2
-      - voyage-2
-      - voyage-lite-02-instruct
+# Default settings
+defaults:
+  temperature: 0.7
+  max_tokens: 8192
+  timeout_seconds: 180

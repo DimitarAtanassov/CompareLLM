@@ -186,7 +186,7 @@ class EnhancedChatAdapter:
                 
                 print(f"❌ Anthropic HTTP error: {e.response.status_code} - {error_detail}")
                 raise ProviderError(provider.name, f"HTTP {e.response.status_code}: {error_detail}")
-    
+
     async def _openai_chat(
         self, 
         provider: Provider, 
@@ -372,7 +372,129 @@ class EnhancedChatAdapter:
             self._raise_for_status(r)
             data = r.json()
             return data["message"]["content"]
-    
+
+    async def _deepseek_chat(
+        self, 
+        provider: Provider, 
+        model: str, 
+        messages: List[Dict[str, str]], 
+        temperature: float, 
+        max_tokens: int, 
+        timeout_s: int,
+        provider_params: Optional[Dict[str, Any]] = None
+    ) -> str:
+        """
+        Handle DeepSeek chat completion (OpenAI-compatible with specific adjustments).
+        DeepSeek uses OpenAI's API format but may have specific parameter requirements.
+        """
+        headers = dict(provider.headers or {})
+        if provider.api_key:
+            headers["Authorization"] = f"Bearer {provider.api_key}"
+        
+        url = f"{provider.base_url}/chat/completions"
+        
+        # Build payload (DeepSeek follows OpenAI format)
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        
+        # Add DeepSeek-specific or OpenAI-compatible parameters
+        if provider_params:
+            # DeepSeek supports most OpenAI parameters
+            supported_params = [
+                "top_p", "frequency_penalty", "presence_penalty", "stop",
+                "stream", "n", "logprobs", "echo"
+            ]
+            
+            for param in supported_params:
+                if param in provider_params:
+                    payload[param] = provider_params[param]
+        
+        print(f"🚀 DeepSeek request - Model: {model}")
+        print(f"📝 Payload: {json.dumps(payload, indent=2)}")
+        
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            try:
+                r = await client.post(url, headers=headers, json=payload)
+                self._raise_for_status(r)
+                data = r.json()
+                
+                # Extract response (OpenAI format)
+                if "choices" in data and len(data["choices"]) > 0:
+                    return data["choices"][0]["message"]["content"]
+                else:
+                    raise ProviderError(provider.name, "Invalid response format from DeepSeek")
+                    
+            except httpx.HTTPStatusError as e:
+                error_detail = ""
+                try:
+                    error_json = r.json()
+                    error_detail = error_json.get("error", {}).get("message", r.text)
+                except:
+                    error_detail = r.text
+                
+                print(f"❌ DeepSeek HTTP error: {e.response.status_code} - {error_detail}")
+                raise ProviderError(provider.name, f"HTTP {e.response.status_code}: {error_detail}")
+
+    # Update the chat_completion method to include DeepSeek handling:
+    async def chat_completion(
+        self,
+        provider: Provider,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 8192,
+        min_tokens: Optional[int] = None,
+        timeout_s: int = 180,
+        provider_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Generate chat completion using the appropriate provider with enhanced parameters.
+        """
+        try:
+            print(f"🚀 Enhanced Chat request - Provider: {provider.name}, Model: {model}")
+            print(f"🔑 API Key present: {bool(provider.api_key)}")
+            print(f"🌐 Base URL: {provider.base_url}")
+            print(f"📝 Messages count: {len(messages)}")
+            
+            if provider_params:
+                print(f"⚙️  Provider params: {json.dumps(provider_params, indent=2)}")
+            
+            # Route to appropriate handler based on provider type
+            if provider.type == "openai":
+                # This also handles DeepSeek when configured as type "openai"
+                return await self._openai_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+                )
+            elif provider.type == "deepseek":
+                # Specific DeepSeek handler if configured as type "deepseek"
+                return await self._deepseek_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+                )
+            elif provider.type == "gemini":
+                return await self._gemini_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+                )
+            elif provider.type == "anthropic":
+                return await self._anthropic_chat_enhanced(
+                    provider, model, messages, temperature, max_tokens, min_tokens, timeout_s, provider_params
+                )
+            elif provider.type == "ollama":
+                return await self._ollama_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+                )
+            else:
+                raise ProviderError(provider.name, f"Unsupported provider type: {provider.type}")
+                
+        except Exception as e:
+            print(f"❌ Chat error - Provider: {provider.name}, Model: {model}, Error: {str(e)}")
+            if isinstance(e, ProviderError):
+                raise
+            raise ProviderError(provider.name, str(e))
+
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Raise appropriate exception for HTTP errors."""
         try:
