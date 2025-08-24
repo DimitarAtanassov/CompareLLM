@@ -89,7 +89,7 @@ services:
   ui:
     build: ./ui
     environment:
-      NEXT_PUBLIC_API_BASE_URL: /backend   # <- matches rewrite
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080   # <- matches rewrite
       NEXT_PUBLIC_API_URL: http://api:8080
       NODE_ENV: production
     ports: 

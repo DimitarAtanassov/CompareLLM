@@ -10,8 +10,8 @@ providers:
     headers:
       anthropic-version: "2023-06-01"
     models:
-      - claude-3-7-sonnet-latest
-      - claude-3-7-haiku-latest
+      - claude-3-5-haiku-latest
+      - claude-opus-4-1-20250805
     embedding_models: []
 
   # OpenAI GPT Models
@@ -42,7 +42,7 @@ providers:
   # Ollama Local Models
   ollama:
     type: ollama
-    base_url: http://localhost:11434  # Default Ollama port
+    base_url: http://ollama:11434 # Default Ollama port
     api_key_env: null  # No API key needed for local
     headers: {}
     models:
