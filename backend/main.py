@@ -389,7 +389,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="Model not specified")
             
             # Create request object
-            from models.DEPRECATED_requests import EmbeddingRequest
+            from models.enhanced_requests import EmbeddingRequest
             embedding_request = EmbeddingRequest(texts=texts, model=model)
             
             # Generate embeddings
@@ -428,7 +428,7 @@ def create_app() -> FastAPI:
         try:
             body = await request.json()
             
-            from models.DEPRECATED_requests import DatasetUploadRequest
+            from models.enhanced_requests import DatasetUploadRequest
             upload_request = DatasetUploadRequest(**body)
             
             response = await dataset_service.upload_dataset(upload_request)
@@ -477,7 +477,7 @@ def create_app() -> FastAPI:
         try:
             body = await request.json()
             
-            from models.DEPRECATED_requests import SearchRequest
+            from models.enhanced_requests import SearchRequest
             search_request = SearchRequest(**body)
             
             response = await search_service.semantic_search(search_request)
