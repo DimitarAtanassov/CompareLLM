@@ -451,3 +451,8 @@ class EnhancedChatAdapter:
             except Exception:
                 detail = response.text
             raise RuntimeError(f"{response.status_code} {response.reason_phrase}: {detail}") from e
+
+
+# --- Backward compatibility alias (safe removal after full migration) ---
+class ChatAdapter(EnhancedChatAdapter):
+    pass

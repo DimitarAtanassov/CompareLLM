@@ -316,3 +316,8 @@ class EnhancedChatService:
             if not (-2 <= penalty <= 2):
                 result["errors"].append("presence_penalty must be between -2 and 2")
                 result["valid"] = False
+
+
+# --- Backward compatibility alias (safe removal after full migration) ---
+class ChatService(EnhancedChatService):
+    pass

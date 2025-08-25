@@ -408,7 +408,7 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                 )
 
             # Create enhanced request with Anthropic parameters
-            from models.DEPRECATED_requests import create_anthropic_request
+            from models.enhanced_requests import create_anthropic_request
 
             request = create_anthropic_request(
                 messages=messages,

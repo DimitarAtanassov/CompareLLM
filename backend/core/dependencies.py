@@ -4,9 +4,9 @@ from fastapi import Depends
 
 from config.settings import Settings, get_settings
 from providers.registry import ModelRegistry
-from providers.adapters.DEPRECATED_chat_adapter import ChatAdapter
+from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 from providers.adapters.embedding_adapter import EmbeddingAdapter
-from services.DEPRECATED_chat_service import ChatService
+from services.enhanced_chat_service import EnhancedChatService
 from services.embedding_service import EmbeddingService
 from services.dataset_service import DatasetService
 from services.search_services import SearchService
@@ -20,9 +20,11 @@ def get_model_registry(settings: Settings = Depends(get_settings)) -> ModelRegis
 
 
 @lru_cache()
-def get_chat_adapter() -> ChatAdapter:
+def get_chat_adapter(
+    settings: Settings = Depends(get_settings)
+) -> EnhancedChatAdapter:
     """Get the chat adapter singleton."""
-    return ChatAdapter()
+    return EnhancedChatAdapter()
 
 
 @lru_cache()
@@ -42,7 +44,7 @@ def get_chat_service(
     chat_adapter: ChatAdapter = Depends(get_chat_adapter)
 ) -> ChatService:
     """Get chat service with dependencies."""
-    return ChatService(registry, chat_adapter)
+    return EnhancedChatService(registry, chat_adapter)
 
 
 def get_embedding_service(
