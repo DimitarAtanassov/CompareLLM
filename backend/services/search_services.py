@@ -3,7 +3,7 @@ from typing import List, Dict, Any
 
 from config.logging import log_event
 from core.exceptions import DatasetNotFoundError, ModelNotFoundError
-from models.DEPRECATED_requests import SearchRequest
+from models.enhanced_requests import SearchRequest
 from models.responses import SearchResponse
 from providers.registry import ModelRegistry
 from services.embedding_service import EmbeddingService

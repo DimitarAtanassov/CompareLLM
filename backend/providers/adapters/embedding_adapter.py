@@ -3,7 +3,6 @@ import httpx
 
 from core.exceptions import ProviderError
 from providers.base import Provider
-from providers.adapters.DEPRECATED_chat_adapter import get_host_lock
 
 
 class EmbeddingAdapter:
