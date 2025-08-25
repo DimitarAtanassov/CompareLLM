@@ -27,6 +27,8 @@ class EmbeddingAdapter:
                 return await self._cohere_embeddings(provider, model, texts, timeout_s)
             elif provider.type == "voyage":
                 return await self._voyage_embeddings(provider, model, texts, timeout_s)
+            elif provider.type == "ollama":   # 🔥 NEW
+                return await self._ollama_embeddings(provider, model, texts, timeout_s)
             else:
                 raise ProviderError(provider.name, f"Unsupported provider type: {provider.type}")
         except Exception as e:
@@ -112,6 +114,57 @@ class EmbeddingAdapter:
             self._raise_for_status(r)
             data = r.json()
             return [item["embedding"] for item in data["data"]]
+
+    async def _ollama_embeddings(
+        self, provider: Provider, model: str, texts: List[str], timeout_s: int
+    ) -> List[List[float]]:
+        """
+        Supports both Ollama endpoints:
+          - OpenAI compatible:  POST {base}/v1/embeddings  -> {"object":"list","data":[{"embedding":[...]}]}
+          - Native Ollama:      POST {base}/api/embeddings -> {"embedding":[...]} (one text per call)
+        We auto-select the URL based on base_url; if it contains /v1 we use the OAI-compatible batch call.
+        """
+        headers = dict(provider.headers or {})
+        base = provider.base_url.rstrip("/")
+
+        use_oai = base.endswith("/v1") or "/v1" in base  # e.g., http://ollama:11434/v1
+        url = f"{base}/embeddings" if use_oai else f"{base}/api/embeddings"
+
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            if use_oai:
+                # Batch once
+                payload = {"model": model, "input": texts}
+                r = await client.post(url, headers=headers, json=payload)
+                self._raise_for_status(r)
+                data = r.json()
+
+                # Accept both OpenAI-compatible ("data") and native just in case
+                if isinstance(data, dict) and "data" in data:
+                    return [item["embedding"] for item in data["data"]]
+                if isinstance(data, dict) and "embedding" in data:
+                    # Some proxies might still return single-object
+                    return [data["embedding"]]
+
+                raise RuntimeError(f"Ollama returned unexpected response: {data}")
+
+            else:
+                # Native API: one request per text
+                out: List[List[float]] = []
+                for t in texts:
+                    payload = {"model": model, "input": t}
+                    r = await client.post(url, headers=headers, json=payload)
+                    self._raise_for_status(r)
+                    data = r.json()
+                    if isinstance(data, dict) and "embedding" in data:
+                        out.append(data["embedding"])
+                    elif isinstance(data, dict) and "data" in data:
+                        # Defensive: some builds expose OAI format even on /api
+                        out.append(data["data"][0]["embedding"])
+                    else:
+                        raise RuntimeError(f"Ollama returned unexpected response: {data}")
+                return out
+
+
     
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Raise appropriate exception for HTTP errors."""

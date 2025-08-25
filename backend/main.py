@@ -24,6 +24,9 @@ from services.dataset_service import DatasetService
 from services.search_services import SearchService
 from storage.memory_store import MemoryStorageBackend
 
+# NEW: import the enhanced routes setup (adds /v2, including /v2/search/multi)
+from api.enhanced_routes import setup_enhanced_chat_routes
+
 # Global services
 services = {}
 
@@ -80,6 +83,10 @@ async def lifespan(app: FastAPI):
     # Store in app state
     app.state.services = services
     app.state.registry = registry
+    app.state.search_service = services['search']  # NEW: expose for enhanced_routes dependencies
+
+    # NEW: include the enhanced router (adds /v2 endpoints incl. /v2/search/multi)
+    app.include_router(setup_enhanced_chat_routes(services['chat'], registry))
     
     yield
     
@@ -131,11 +138,11 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health_check():
         """Health check endpoint."""
-        services = getattr(app.state, 'services', {})
+        services_map = getattr(app.state, 'services', {})
         registry = getattr(app.state, 'registry', None)
         return {
             "status": "healthy",
-            "services": list(services.keys()),
+            "services": list(services_map.keys()),
             "models": len(registry.model_map) if registry else 0,
             "embedding_models": len(registry.embedding_map) if registry else 0
         }

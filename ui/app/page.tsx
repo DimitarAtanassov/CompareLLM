@@ -111,6 +111,19 @@ type EnhancedChatRequest = {
   };
 };
 
+// ---------- NEW: Multi-provider embeddings search response types ----------
+type MultiBucket = {
+  error?: string;
+  items: SearchResult[];
+  dataset_id?: string;
+  total_documents?: number;
+};
+type MultiSearchResponse = {
+  query: string;
+  results: Record<string, MultiBucket>; // key = embedding model name
+  duration_ms?: number;
+};
+
 // ---------------- Config ----------------
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "/backend");
 
@@ -450,6 +463,9 @@ export default function Page() {
     startedAt: number;
   } | null>(null);
 
+  // ---------- NEW: Multi-provider results state ----------
+  const [multiSearchResults, setMultiSearchResults] = useState<MultiSearchResponse | null>(null);
+
   const streamAbortRef = useRef<AbortController | null>(null);
   const interactiveAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -483,6 +499,12 @@ export default function Page() {
     [modelToProvider]
   );
 
+  // ---------- NEW: derive base dataset id helper ----------
+  function inferBaseDatasetId(fullId: string, model: string): string {
+    // Datasets are saved as `${dataset_id}_${embedding_model}` during upload.
+    const suffix = "_" + model;
+    return fullId.endsWith(suffix) ? fullId.slice(0, -suffix.length) : fullId;
+  }
 
   const updateParam = useCallback(
     (model: string, params: PerModelParam) => {
@@ -882,6 +904,56 @@ export default function Page() {
     }
   }, [searchQuery, selectedDataset, selectedSearchModel]);
 
+  // ---------- NEW: Multi-provider compare action ----------
+  const performMultiSearch = useCallback(async () => {
+    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
+      alert("Please provide search query, select a dataset, and pick a search model (used to infer base dataset id).");
+      return;
+    }
+    if (selectedEmbeddingModels.length === 0) {
+      alert("Select at least one embedding model (left rail) to compare.");
+      return;
+    }
+
+    setIsSearching(true);
+    setMultiSearchResults(null);
+    const myId = ++requestIdRef.current;
+
+    // Infer base id from dataset + model (uploads use `${dataset_id}_${embedding_model}`)
+    const baseId = inferBaseDatasetId(selectedDataset, selectedSearchModel);
+
+    try {
+      const res = await fetch(`${API_BASE}/v2/search/multi`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          base_dataset_id: baseId,
+          embedding_models: selectedEmbeddingModels,
+          query: searchQuery,
+          top_k: 5,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.text();
+        throw new Error(error);
+      }
+
+      const json: MultiSearchResponse = await res.json();
+      if (myId === requestIdRef.current) {
+        setMultiSearchResults(json);
+      }
+    } catch (err) {
+      console.error("Multi-search failed:", err);
+      if (myId === requestIdRef.current) {
+        alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setMultiSearchResults(null);
+      }
+    } finally {
+      if (myId === requestIdRef.current) setIsSearching(false);
+    }
+  }, [searchQuery, selectedDataset, selectedSearchModel, selectedEmbeddingModels]);
+
   const deleteDataset = useCallback(async (id: string) => {
     if (!confirm(`Are you sure you want to delete dataset "${id}"?`)) return;
 
@@ -906,7 +978,6 @@ export default function Page() {
     setEndedAt(null);
   }, [selected]);
 
-  // -------- Enhanced API runner --------
   // -------- Enhanced API runner --------
   function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
     const out: Record<string, unknown> = {};
@@ -1047,9 +1118,6 @@ export default function Page() {
     }
   }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, getProviderType, resetRun]);
 
-
-
-
   // -------- Streaming runner (JSONL) - existing --------
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
@@ -1151,6 +1219,15 @@ export default function Page() {
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (evt: KeyboardEvent) => {
+      // NEW: Shift+Enter => multi-compare on Embeddings tab
+      if ((evt.metaKey || evt.ctrlKey) && evt.shiftKey && evt.key === "Enter") {
+        evt.preventDefault();
+        if (activeTab === "embedding" && searchQuery.trim()) {
+          void performMultiSearch();
+          return;
+        }
+      }
+
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
         if (activeModel && interactivePrompt.trim()) {
@@ -1167,7 +1244,7 @@ export default function Page() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [canRun, executePrompt, activeTab, searchQuery, performSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
+  }, [canRun, executePrompt, activeTab, searchQuery, performSearch, performMultiSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
 
   // Small UX helpers
   const anyErrors = useMemo(() => Object.values(answers).some((a) => a?.error), [answers]);
@@ -1769,6 +1846,21 @@ export default function Page() {
                 >
                   {isSearching ? "Searching…" : "Search"}
                 </button>
+
+                {/* NEW: Compare button */}
+                <button
+                  onClick={performMultiSearch}
+                  disabled={
+                    isSearching ||
+                    !searchQuery.trim() ||
+                    !selectedDataset ||
+                    !selectedSearchModel ||
+                    selectedEmbeddingModels.length === 0
+                  }
+                  className="mt-2 w-full rounded-xl py-2 px-4 font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 transition disabled:opacity-50"
+                >
+                  {isSearching ? "Comparing…" : `Compare Across Models (${selectedEmbeddingModels.length})`}
+                </button>
               </div>
             </div>
 
@@ -1805,6 +1897,7 @@ export default function Page() {
 
           {/* Right rail: Search Results */}
           <section className="space-y-4">
+            {/* Single-model block (existing) */}
             {searchResults.length > 0 && (
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
                 <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">
@@ -1848,7 +1941,98 @@ export default function Page() {
               </div>
             )}
 
-            {searchResults.length === 0 && searchQuery && !isSearching && (
+            {/* NEW: Side-by-side multi-provider results */}
+            {multiSearchResults && (
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-semibold text-purple-600 dark:text-purple-400">
+                    Side-by-Side • “{multiSearchResults.query}”
+                  </h3>
+                  {typeof multiSearchResults.duration_ms === "number" && (
+                    <span className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
+                      {multiSearchResults.duration_ms} ms
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {selectedEmbeddingModels.map((model) => {
+                    const bucket = multiSearchResults.results[model];
+                    const count = bucket?.items?.length ?? 0;
+                    const statusPill = bucket?.error ? (
+                      <span className="text-xs px-2 py-1 rounded-full bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
+                        Missing
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400">
+                        {count} hit{count === 1 ? "" : "s"}
+                      </span>
+                    );
+
+                    return (
+                      <div
+                        key={model}
+                        className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 p-3"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold font-mono">{model}</span>
+                            {bucket?.dataset_id && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300">
+                                {bucket.dataset_id}
+                              </span>
+                            )}
+                          </div>
+                          {statusPill}
+                        </div>
+
+                        {bucket?.error && (
+                          <p className="text-xs text-red-600 dark:text-red-400 mb-2">{bucket.error}</p>
+                        )}
+
+                        <div className="space-y-3">
+                          {(bucket?.items ?? []).map((r, idx) => (
+                            <div
+                              key={idx}
+                              className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/60 dark:bg-zinc-900/50"
+                            >
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium">#{idx + 1}</span>
+                                <span className="text-xs px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
+                                  {(r.similarity_score * 100).toFixed(1)}%
+                                </span>
+                              </div>
+
+                              <div className="text-xs space-y-1">
+                                {Object.entries(r).map(([k, v]) => {
+                                  if (k === "similarity_score" || k === "embedding" || k.startsWith("_")) return null;
+                                  const val =
+                                    typeof v === "string" && v.length > 200 ? v.slice(0, 200) + "…" : String(v);
+                                  return (
+                                    <div key={k}>
+                                      <span className="font-medium text-zinc-600 dark:text-zinc-400">{k}:</span>{" "}
+                                      <span className="text-zinc-900 dark:text-zinc-100">{val}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+
+                          {(!bucket || (bucket.items?.length ?? 0) === 0) && !bucket?.error && (
+                            <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                              No results returned for this model.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {searchResults.length === 0 && !multiSearchResults && searchQuery && !isSearching && (
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-8 bg-white dark:bg-zinc-950 shadow-sm text-center">
                 <p className="text-zinc-500 dark:text-zinc-400">No results found for your search query.</p>
               </div>

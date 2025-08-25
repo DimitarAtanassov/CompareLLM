@@ -72,6 +72,18 @@ providers:
     embedding_models:
       - embedding-001
 
+  # Voyage AI
+  voyage:
+    type: voyage
+    base_url: https://api.voyageai.com
+    api_key_env: VOYAGE_API_KEY
+    headers: {}
+    embedding_models:
+      - voyage-large-2
+      - voyage-code-2
+      - voyage-2
+      - voyage-lite-02-instruct
+
 # Default settings
 defaults:
   temperature: 0.7

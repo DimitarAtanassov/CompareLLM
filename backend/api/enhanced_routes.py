@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 import asyncio
@@ -6,14 +6,15 @@ import json
 
 from models.enhanced_requests import EnhancedChatRequest, EnhancedOpenAIChatRequest, AnthropicProviderParams
 from models.responses import ChatResponse, ModelAnswer
-from services.chat_service import EnhancedChatService
+from services.enhanced_chat_service import EnhancedChatService
 from providers.registry import ModelRegistry
-from providers.adapters.chat_adapter import EnhancedChatAdapter
+from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 from core.exceptions import AskManyLLMsException
 
 router = APIRouter(prefix="/v2", tags=["Enhanced API"])
 
-# Response models
+# ---------- Response models (OpenAI-compatible) ----------
+
 class OpenAIChoice(BaseModel):
     index: int
     message: Dict[str, str]
@@ -31,6 +32,8 @@ class OpenAIChatResponse(BaseModel):
     model: str
     choices: List[OpenAIChoice]
     usage: OpenAIUsage
+
+# ---------- Model capabilities / validation ----------
 
 class ModelCapabilities(BaseModel):
     model_name: str
@@ -53,10 +56,32 @@ class ParameterExampleResponse(BaseModel):
     gemini_example: Dict[str, Any]
     ollama_example: Dict[str, Any]
 
+# ---------- NEW: Multi-provider embeddings search request ----------
+
+class MultiSearchRequest(BaseModel):
+    base_dataset_id: str
+    embedding_models: List[str]
+    query: str
+    top_k: int = 5
+
 
 def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: ModelRegistry):
-    """Setup enhanced chat completion routes with dependency injection."""
-    
+    """
+    Setup enhanced chat and search routes with dependency injection.
+    Expects the following singletons to be set at app startup:
+      - request.app.state.search_service : SearchService
+      - request.app.state.registry       : ModelRegistry
+      - request.app.state.embedding_service / storage handled elsewhere
+    """
+
+    # --- Dependency to fetch SearchService from app.state ---
+    def get_search_service(request: Request):
+        svc = getattr(request.app.state, "search_service", None)
+        if svc is None:
+            raise HTTPException(status_code=500, detail="SearchService not initialized")
+        return svc
+
+    # ---------- Enhanced OpenAI-compatible chat completions ----------
     @router.post("/chat/completions", response_model=OpenAIChatResponse)
     async def enhanced_openai_chat_completions(request: EnhancedOpenAIChatRequest):
         """Enhanced OpenAI-compatible chat completions with provider parameters."""
@@ -65,47 +90,47 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             if request.model not in registry.model_map:
                 available_models = list(registry.model_map.keys())
                 raise HTTPException(
-                    status_code=404, 
+                    status_code=404,
                     detail=f"Model {request.model} not found. Available: {available_models}"
                 )
-            
+
             # Convert to internal enhanced format
             internal_request = request.to_enhanced_request()
-            
+
             # Validate request for the specific model
             validation = await chat_service.validate_request_for_model(
                 request.model, internal_request
             )
-            
+
             if not validation["valid"]:
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"Request validation failed: {', '.join(validation['errors'])}"
                 )
-            
+
             # Log warnings if any
             if validation["warnings"]:
                 print(f"⚠️  Request warnings: {', '.join(validation['warnings'])}")
-            
+
             # Process the request
             response = await chat_service.chat_completion(internal_request)
-            
+
             # Convert to OpenAI format
             model_answer = response.answers[request.model]
-            
+
             if model_answer.error:
                 raise HTTPException(status_code=500, detail=model_answer.error)
-            
+
             choice = OpenAIChoice(
                 index=0,
                 message={"role": "assistant", "content": model_answer.answer or ""},
                 finish_reason="stop"
             )
-            
-            # Estimate token usage
+
+            # Very rough token usage estimation (word count proxy)
             prompt_tokens = sum(len(msg.get("content", "").split()) for msg in request.messages)
             completion_tokens = len((model_answer.answer or "").split())
-            
+
             return OpenAIChatResponse(
                 id=f"enhanced-{int(asyncio.get_event_loop().time())}",
                 created=int(asyncio.get_event_loop().time()),
@@ -117,12 +142,30 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                     total_tokens=prompt_tokens + completion_tokens
                 )
             )
-            
+
         except AskManyLLMsException as e:
             raise HTTPException(status_code=400, detail=e.message)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
+
+    # ---------- NEW: Multi-provider embeddings search endpoint ----------
+    @router.post("/search/multi")
+    async def search_multi(
+        req: MultiSearchRequest,
+        search_service = Depends(get_search_service),
+    ) -> Dict[str, Any]:
+        """
+        Compare cosine-similarity search results across multiple embedding models
+        using the SAME query. Expects datasets saved as {base_dataset_id}_{model}.
+        """
+        return await search_service.semantic_search_multi(
+            base_dataset_id=req.base_dataset_id,
+            embedding_models=req.embedding_models,
+            query=req.query,
+            top_k=req.top_k,
+        )
+
+    # ---------- Enhanced multi-model chat (native enhanced format) ----------
     @router.post("/chat/completions/enhanced", response_model=ChatResponse)
     async def enhanced_multi_model_chat(request: EnhancedChatRequest):
         """Enhanced multi-model chat with full provider parameter support."""
@@ -135,33 +178,34 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                     status_code=404,
                     detail=f"Unknown models: {unknown_models}. Available: {list(registry.model_map.keys())}"
                 )
-            
+
             # Validate request for each model
             validation_results = {}
             for model in chosen_models:
                 validation = await chat_service.validate_request_for_model(model, request)
                 validation_results[model] = validation
-                
+
                 if not validation["valid"]:
                     raise HTTPException(
                         status_code=400,
                         detail=f"Model {model} validation failed: {', '.join(validation['errors'])}"
                     )
-            
+
             # Log any warnings
             for model, validation in validation_results.items():
                 if validation["warnings"]:
                     print(f"⚠️  Model {model} warnings: {', '.join(validation['warnings'])}")
-            
+
             # Process the request
             response = await chat_service.chat_completion(request)
             return response
-            
+
         except AskManyLLMsException as e:
             raise HTTPException(status_code=400, detail=e.message)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
+
+    # ---------- Model capability and validation helpers ----------
     @router.get("/models/{model_name}/capabilities", response_model=ModelCapabilities)
     async def get_model_capabilities(model_name: str):
         """Get capabilities and configuration for a specific model."""
@@ -172,7 +216,7 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             if "not found" in str(e).lower():
                 raise HTTPException(status_code=404, detail=str(e))
             raise HTTPException(status_code=500, detail=str(e))
-    
+
     @router.post("/models/{model_name}/validate", response_model=ValidationResult)
     async def validate_request_for_model(model_name: str, request: EnhancedChatRequest):
         """Validate that a request is compatible with a specific model."""
@@ -183,7 +227,8 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             if "not found" in str(e).lower():
                 raise HTTPException(status_code=404, detail=str(e))
             raise HTTPException(status_code=500, detail=str(e))
-    
+
+    # ---------- Parameter example helper ----------
     @router.get("/parameters/examples", response_model=ParameterExampleResponse)
     async def get_parameter_examples():
         """Get examples of provider-specific parameters."""
@@ -232,7 +277,8 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                 "format": "json"
             }
         )
-    
+
+    # ---------- Anthropic-optimized endpoint ----------
     @router.post("/chat/anthropic", response_model=ChatResponse)
     async def anthropic_optimized_chat(
         messages: List[Dict[str, str]],
@@ -251,17 +297,17 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             # Validate model is Anthropic
             if model not in registry.model_map:
                 raise HTTPException(status_code=404, detail=f"Model {model} not found")
-            
+
             provider, _ = registry.model_map[model]
             if provider.type != "anthropic":
                 raise HTTPException(
-                    status_code=400, 
+                    status_code=400,
                     detail=f"Model {model} is not an Anthropic model"
                 )
-            
+
             # Create enhanced request with Anthropic parameters
             from models.requests import create_anthropic_request
-            
+
             request = create_anthropic_request(
                 messages=messages,
                 model=model,
@@ -274,21 +320,22 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                 top_k=top_k,
                 top_p=top_p
             )
-            
+
             # Process the request
             response = await chat_service.chat_completion(request)
             return response
-            
+
         except AskManyLLMsException as e:
             raise HTTPException(status_code=400, detail=e.message)
         except Exception as e:
             raise HTTPException(status_code=500, detail=str(e))
-    
+
+    # ---------- Provider feature matrix ----------
     @router.get("/providers/features")
     async def get_provider_features():
         """Get feature matrix for all providers."""
         features = {}
-        
+
         for provider_name, provider in registry.providers.items():
             provider_features = {
                 "type": provider.type,
@@ -296,7 +343,7 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                 "embedding_models": provider.embedding_models,
                 "features": {}
             }
-            
+
             if provider.type == "anthropic":
                 provider_features["features"] = {
                     "thinking": True,
@@ -335,15 +382,16 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
                     "system_messages": True,
                     "json_mode": True
                 }
-            
+
             features[provider_name] = provider_features
-        
+
         return {"providers": features}
-    
+
     return router
 
 
-# Example usage functions for documentation
+# ---------- Example usage payload helpers (for docs / tests) ----------
+
 def create_anthropic_thinking_example():
     """Example of using Anthropic's extended thinking feature."""
     return {
