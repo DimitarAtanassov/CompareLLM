@@ -23,7 +23,48 @@ class SearchService:
         self.registry = registry
         self.embedding_service = embedding_service
         self.storage = storage
-    
+
+    async def search(
+        self,
+        dataset_id: str,
+        query_vector: List[float],
+        top_k: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Vector search against a stored dataset. Returns a list of hit dicts.
+        Shape is compatible with the self-dataset-compare route, which
+        accepts either:
+          - {'similarity_score': float, **doc_fields}
+          - or {'score': float, 'doc': {...}}
+        We’ll return the first form.
+        """
+        # Ensure dataset exists
+        if not await self.storage.dataset_exists(dataset_id):
+            raise DatasetNotFoundError(dataset_id)
+
+        # Load documents (each should contain an 'embedding' field)
+        documents = await self.storage.get_dataset(dataset_id)
+
+        # Rank by cosine similarity (uses your existing utility)
+        ranked = find_similar_documents(query_vector, documents, top_k or 5)
+        # Remove stored embeddings to keep payload small
+        for item in ranked:
+            item.pop("embedding", None)
+
+        # If your find_similar_documents already returns objects that include
+        # 'similarity_score' and the other doc fields, we’re done. If instead it
+        # returns {'similarity_score': s, 'doc': {...}}, flatten here:
+        flattened: List[Dict[str, Any]] = []
+        for hit in ranked:
+            if "doc" in hit and isinstance(hit["doc"], dict):
+                row = {**hit["doc"]}
+                row["similarity_score"] = float(hit.get("similarity_score", hit.get("score", 0.0)))
+                flattened.append(row)
+            else:
+                # already flattened
+                flattened.append(hit)
+
+        return flattened
     async def semantic_search(self, request: SearchRequest) -> SearchResponse:
         """Perform semantic search against a dataset."""
         if request.embedding_model not in self.registry.embedding_map:

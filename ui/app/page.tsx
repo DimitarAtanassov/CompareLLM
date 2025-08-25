@@ -904,10 +904,10 @@ export default function Page() {
     }
   }, [searchQuery, selectedDataset, selectedSearchModel]);
 
-  // ---------- NEW: Multi-provider compare action ----------
+  // ---------- REPLACEMENT: Multi-provider compare (self-dataset) ----------
   const performMultiSearch = useCallback(async () => {
-    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
-      alert("Please provide search query, select a dataset, and pick a search model (used to infer base dataset id).");
+    if (!searchQuery.trim()) {
+      alert("Please provide a search query.");
       return;
     }
     if (selectedEmbeddingModels.length === 0) {
@@ -919,32 +919,31 @@ export default function Page() {
     setMultiSearchResults(null);
     const myId = ++requestIdRef.current;
 
-    // Infer base id from dataset + model (uploads use `${dataset_id}_${embedding_model}`)
-    const baseId = inferBaseDatasetId(selectedDataset, selectedSearchModel);
-
     try {
-      const res = await fetch(`${API_BASE}/v2/search/multi`, {
+      const res = await fetch(`${API_BASE}/v2/search/self-dataset-compare`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          base_dataset_id: baseId,
-          embedding_models: selectedEmbeddingModels,
           query: searchQuery,
+          embedding_models: selectedEmbeddingModels,
           top_k: 5,
+          // no dataset_base — let backend auto-detect
         }),
       });
 
       if (!res.ok) {
-        const error = await res.text();
-        throw new Error(error);
+        let msg = await res.text();
+        try {
+          const j = JSON.parse(msg);
+          msg = j.detail || j.message || msg;
+        } catch {}
+        throw new Error(msg || `HTTP ${res.status}`);
       }
 
       const json: MultiSearchResponse = await res.json();
-      if (myId === requestIdRef.current) {
-        setMultiSearchResults(json);
-      }
+      if (myId === requestIdRef.current) setMultiSearchResults(json);
     } catch (err) {
-      console.error("Multi-search failed:", err);
+      console.error("Self-dataset compare failed:", err);
       if (myId === requestIdRef.current) {
         alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
         setMultiSearchResults(null);
@@ -952,7 +951,9 @@ export default function Page() {
     } finally {
       if (myId === requestIdRef.current) setIsSearching(false);
     }
-  }, [searchQuery, selectedDataset, selectedSearchModel, selectedEmbeddingModels]);
+  }, [searchQuery, selectedEmbeddingModels, API_BASE]);
+
+
 
   const deleteDataset = useCallback(async (id: string) => {
     if (!confirm(`Are you sure you want to delete dataset "${id}"?`)) return;
@@ -1222,12 +1223,11 @@ export default function Page() {
       // NEW: Shift+Enter => multi-compare on Embeddings tab
       if ((evt.metaKey || evt.ctrlKey) && evt.shiftKey && evt.key === "Enter") {
         evt.preventDefault();
-        if (activeTab === "embedding" && searchQuery.trim()) {
+        if (activeTab === "embedding" && searchQuery.trim() && selectedEmbeddingModels.length > 0) {
           void performMultiSearch();
           return;
         }
       }
-
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
         if (activeModel && interactivePrompt.trim()) {
@@ -1853,8 +1853,6 @@ export default function Page() {
                   disabled={
                     isSearching ||
                     !searchQuery.trim() ||
-                    !selectedDataset ||
-                    !selectedSearchModel ||
                     selectedEmbeddingModels.length === 0
                   }
                   className="mt-2 w-full rounded-xl py-2 px-4 font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 transition disabled:opacity-50"

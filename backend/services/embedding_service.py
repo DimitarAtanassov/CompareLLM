@@ -69,3 +69,14 @@ class EmbeddingService:
                 error=str(e)
             )
             raise ProviderError(provider.name, str(e))
+        
+    async def embed_texts(self, model: str, texts: List[str]) -> List[List[float]]:
+        """Shim used by /v2/search/self-dataset-compare."""
+        req = EmbeddingRequest(texts=texts, model=model)
+        resp = await self.generate_embeddings(req)  # your existing method
+        # Defensive checks
+        if not resp or not getattr(resp, "embeddings", None):
+            raise RuntimeError(f"Provider returned no embeddings for model={model}")
+        if not resp.embeddings[0]:
+            raise RuntimeError(f"Empty embedding vector from model={model}")
+        return resp.embeddings

@@ -1,3 +1,4 @@
+import time
 from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
@@ -12,6 +13,24 @@ from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 from core.exceptions import AskManyLLMsException
 
 router = APIRouter(prefix="/v2", tags=["Enhanced API"])
+
+class MultiBucket(BaseModel):
+    error: Optional[str] = None
+    items: List[Dict[str, Any]] = Field(default_factory=list)
+    dataset_id: Optional[str] = None
+    total_documents: Optional[int] = None
+
+class SelfDatasetCompareRequest(BaseModel):
+    query: str
+    embedding_models: List[str]
+    top_k: int = 5
+    # Optional base to compose per-model dataset_id == f"{dataset_base}_{model}"
+    dataset_base: Optional[str] = None
+
+class MultiSearchResponse(BaseModel):
+    query: str
+    results: Dict[str, MultiBucket]
+    duration_ms: Optional[int] = None
 
 # ---------- Response models (OpenAI-compatible) ----------
 
@@ -64,6 +83,54 @@ class MultiSearchRequest(BaseModel):
     query: str
     top_k: int = 5
 
+
+# --- Helpers to access services on app.state ---------------------------------
+# Adjust these if you wire services differently.
+
+def get_embedding_service(request: Request):
+    svc = getattr(request.app.state, "embedding_service", None)
+    if svc is None:
+        raise HTTPException(status_code=500, detail="Embedding service not initialized")
+    return svc
+
+def get_search_service(request: Request):
+    svc = getattr(request.app.state, "search_service", None)
+    if svc is None:
+        raise HTTPException(status_code=500, detail="Search service not initialized")
+    return svc
+
+def get_memory_store(request: Request):
+    store = getattr(request.app.state, "memory_store", None)
+    if store is None:
+        # Optional; only needed if you want to list datasets for auto-detect
+        raise HTTPException(status_code=500, detail="Memory store not initialized")
+    return store
+
+
+# --- Dataset resolution logic -------------------------------------------------
+def _find_dataset_for_model(
+    model: str,
+    dataset_base: Optional[str],
+    all_dataset_ids: Optional[List[str]],
+) -> Dict[str, Any]:
+    """
+    Returns {'dataset_id': str} or {'error': str}.
+    If dataset_base is provided -> use f"{dataset_base}_{model}".
+    Else, auto-detect by suffix match on all_dataset_ids.
+    """
+    if dataset_base:
+        return {"dataset_id": f"{dataset_base}_{model}"}
+
+    if not all_dataset_ids:
+        return {"error": "No datasets available and no dataset_base provided"}
+
+    suffix = f"_{model}"
+    matches = [d for d in all_dataset_ids if d.endswith(suffix)]
+    if len(matches) == 1:
+        return {"dataset_id": matches[0]}
+    if len(matches) == 0:
+        return {"error": f"No dataset found ending with '{suffix}'"}
+    return {"error": f"Multiple datasets match '{suffix}': {matches}"}
 
 def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: ModelRegistry):
     """
@@ -164,6 +231,41 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             query=req.query,
             top_k=req.top_k,
         )
+
+    def _infer_dataset_base_for_models(
+        all_dataset_ids: List[str],
+        embedding_models: List[str],
+    ) -> Optional[str]:
+        """
+        Given a flat list of dataset ids like:
+        ["stock_news_voyage-2", "stock_news_nomic-embed-text", "faq_voyage-2"]
+        and requested embedding_models:
+        ["voyage-2", "nomic-embed-text"]
+        return the dataset_base that covers ALL requested models, if exactly one exists.
+        If multiple bases fully cover, pick the one with the largest total number of shards.
+        If none fully cover, return None (caller can error gracefully).
+        """
+        # Build: base -> {models it has}
+        base_to_models = {}
+        for ds in all_dataset_ids:
+            for m in embedding_models:
+                suffix = f"_{m}"
+                if ds.endswith(suffix):
+                    base = ds[: -len(suffix)]
+                    base_to_models.setdefault(base, set()).add(m)
+
+        # Candidates that fully cover requested models
+        required = set(embedding_models)
+        full_coverage = [b for b, ms in base_to_models.items() if required.issubset(ms)]
+        if not full_coverage:
+            return None
+        if len(full_coverage) == 1:
+            return full_coverage[0]
+
+        # Tie-breaker: choose the base with the most shards overall (most models embedded)
+        full_coverage.sort(key=lambda b: len(base_to_models[b]), reverse=True)
+        return full_coverage[0]
+
 
     # ---------- Enhanced multi-model chat (native enhanced format) ----------
     @router.post("/chat/completions/enhanced", response_model=ChatResponse)
@@ -388,6 +490,175 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
         return {"providers": features}
 
     return router
+
+
+@router.post("/search/self-dataset-compare", response_model=MultiSearchResponse)
+async def self_dataset_compare(
+    payload: SelfDatasetCompareRequest,
+    request: Request,
+    embedding_service = Depends(get_embedding_service),
+    search_service = Depends(get_search_service),
+):
+    """
+    For each embedding model:
+      - embed the user query with that model
+      - search that model's dataset (auto-detected)
+      - return comparable top_k results per model
+
+    Auto-detect rules:
+      1) If payload.dataset_base is provided -> use f"{dataset_base}_{model}".
+      2) Else, list datasets and prefer a base that is present for *all* requested models.
+      3) Else, fall back to the first dataset that ends with _{model} per model.
+    """
+    start = time.time()
+    results: Dict[str, MultiBucket] = {}
+
+    # --- Try to obtain all dataset ids without hard-failing ---
+    all_dataset_ids: List[str] = []
+
+    # (A) Try memory_store if present
+    memory_store = getattr(request.app.state, "memory_store", None)
+    if memory_store:
+        try:
+            lister = getattr(memory_store, "list_datasets", None)
+            if callable(lister):
+                maybe = lister()
+                got = await maybe if asyncio.iscoroutine(maybe) else maybe
+                # normalize shapes
+                if isinstance(got, dict) and "datasets" in got:
+                    all_dataset_ids = list(got["datasets"] or [])
+                elif isinstance(got, (list, tuple)):
+                    all_dataset_ids = list(got)
+            elif hasattr(memory_store, "datasets"):
+                all_dataset_ids = list(getattr(memory_store, "datasets") or [])
+        except Exception:
+            all_dataset_ids = []
+
+    # (B) Fallback to search_service if nothing found
+    if not all_dataset_ids:
+        try:
+            lister2 = getattr(search_service, "list_datasets", None)
+            if callable(lister2):
+                maybe2 = lister2()
+                got2 = await maybe2 if asyncio.iscoroutine(maybe2) else maybe2
+                if isinstance(got2, dict) and "datasets" in got2:
+                    all_dataset_ids = list(got2["datasets"] or [])
+                elif isinstance(got2, (list, tuple)):
+                    all_dataset_ids = list(got2)
+        except Exception:
+            pass
+
+    # --- Helper: resolve a dataset_id for a given model ---
+    def resolve_dataset_for(model: str) -> Dict[str, str]:
+        # If caller gave a base, use it directly
+        if payload.dataset_base:
+            return {"dataset_id": f"{payload.dataset_base}_{model}"}
+
+        # No base provided; try to find a common base across all models
+        # Build mapping: model -> [datasets ending with _{model}]
+        suffix = f"_{model}"
+        candidates = [d for d in all_dataset_ids if d.endswith(suffix)]
+        if not candidates:
+            return {"error": f"No dataset found ending with '{suffix}'"}
+
+        return {"dataset_id": candidates[0]}  # simple pick; upgraded below
+
+    # If no dataset_base, try to pick a common base across all models first
+    chosen_base: Optional[str] = None
+    if not payload.dataset_base and all_dataset_ids:
+        # build reverse index: dataset_id -> base, model
+        pairs = []
+        for d in all_dataset_ids:
+            # look for trailing _{model}
+            for m in payload.embedding_models:
+                sfx = f"_{m}"
+                if d.endswith(sfx):
+                    base = d[: -len(sfx)]
+                    pairs.append((base, m))
+        # find bases that cover all selected models
+        from collections import defaultdict
+        cover = defaultdict(set)
+        for base, m in pairs:
+            cover[base].add(m)
+        common = [b for b, ms in cover.items() if set(payload.embedding_models).issubset(ms)]
+        if common:
+            # choose the first common base deterministically (alphabetical)
+            chosen_base = sorted(common)[0]
+
+    # --- Embed + search per model (do not fail whole request) ---
+    for model in payload.embedding_models:
+        bucket = MultiBucket(items=[])
+        try:
+            # dataset resolution
+            if chosen_base:
+                dataset_id = f"{chosen_base}_{model}"
+                bucket.dataset_id = dataset_id
+            else:
+                resolved = resolve_dataset_for(model)
+                if "error" in resolved:
+                    bucket.error = resolved["error"]
+                    results[model] = bucket
+                    continue
+                dataset_id = resolved["dataset_id"]
+                bucket.dataset_id = dataset_id
+
+            # optional: total doc count if available
+            try:
+                if memory_store and hasattr(memory_store, "get_dataset_meta") and callable(memory_store.get_dataset_meta):
+                    meta = memory_store.get_dataset_meta(dataset_id)
+                    if isinstance(meta, dict) and "document_count" in meta:
+                        bucket.total_documents = int(meta["document_count"])
+            except Exception:
+                pass
+
+            # embed the query with this model
+            embed = getattr(embedding_service, "embed_texts", None)
+            if not callable(embed):
+                raise RuntimeError("embedding_service.embed_texts() missing")
+            maybe_vecs = embed(model, [payload.query])
+            vecs = await maybe_vecs if hasattr(maybe_vecs, "__await__") else maybe_vecs
+            if not vecs or not vecs[0]:
+                raise RuntimeError("Empty embedding vector returned")
+            query_vector = vecs[0]
+
+            # vector search
+            search_fn = getattr(search_service, "search", None)
+            if not callable(search_fn):
+                raise RuntimeError("search_service.search() missing")
+            maybe_hits = search_fn(dataset_id=dataset_id, query_vector=query_vector, top_k=payload.top_k)
+            raw_hits = await maybe_hits if hasattr(maybe_hits, "__await__") else maybe_hits
+
+            items: List[Dict[str, Any]] = []
+            for hit in (raw_hits or []):
+                score = hit.get("similarity_score") or hit.get("score") or hit.get("distance")
+                if (score is not None) and ("distance" in hit):
+                    try:
+                        score = max(0.0, 1.0 - float(score))  # convert distance-ish to similarity-ish
+                    except Exception:
+                        pass
+
+                row = {**hit.get("doc", {})} if isinstance(hit.get("doc"), dict) else {
+                    k: v for k, v in hit.items() if k != "doc"
+                }
+                try:
+                    row["similarity_score"] = float(score)
+                except Exception:
+                    row["similarity_score"] = 0.0
+                items.append(row)
+
+            bucket.items = items
+
+        except Exception as e:
+            bucket.error = f"{type(e).__name__}: {e}"
+
+        results[model] = bucket
+
+    return MultiSearchResponse(
+        query=payload.query,
+        results=results,
+        duration_ms=int((time.time() - start) * 1000),
+    )
+
 
 
 # ---------- Example usage payload helpers (for docs / tests) ----------

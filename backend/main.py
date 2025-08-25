@@ -83,8 +83,10 @@ async def lifespan(app: FastAPI):
     # Store in app state
     app.state.services = services
     app.state.registry = registry
-    app.state.search_service = services['search']  # NEW: expose for enhanced_routes dependencies
-
+    app.state.search_service = services['search']
+    app.state.embedding_service = services['embedding']  
+    app.state.memory_store = storage                    
+    
     # NEW: include the enhanced router (adds /v2 endpoints incl. /v2/search/multi)
     app.include_router(setup_enhanced_chat_routes(services['chat'], registry))
     

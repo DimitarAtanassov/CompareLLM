@@ -119,50 +119,68 @@ class EmbeddingAdapter:
         self, provider: Provider, model: str, texts: List[str], timeout_s: int
     ) -> List[List[float]]:
         """
-        Supports both Ollama endpoints:
-          - OpenAI compatible:  POST {base}/v1/embeddings  -> {"object":"list","data":[{"embedding":[...]}]}
-          - Native Ollama:      POST {base}/api/embeddings -> {"embedding":[...]} (one text per call)
-        We auto-select the URL based on base_url; if it contains /v1 we use the OAI-compatible batch call.
+        Robust Ollama embeddings:
+        1) Try OpenAI-compatible /v1/embeddings (batch).
+        2) Fallback to native /api/embeddings (one text per call).
+            - Try {"input": "..."} first, then retry with {"prompt": "..."} if needed.
         """
-        headers = dict(provider.headers or {})
-        base = provider.base_url.rstrip("/")
+        import os, json, httpx
 
-        use_oai = base.endswith("/v1") or "/v1" in base  # e.g., http://ollama:11434/v1
-        url = f"{base}/embeddings" if use_oai else f"{base}/api/embeddings"
+        headers = dict(provider.headers or {})
+        base = (provider.base_url or "http://ollama:11434").rstrip("/")
 
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            if use_oai:
-                # Batch once
-                payload = {"model": model, "input": texts}
-                r = await client.post(url, headers=headers, json=payload)
-                self._raise_for_status(r)
-                data = r.json()
-
-                # Accept both OpenAI-compatible ("data") and native just in case
-                if isinstance(data, dict) and "data" in data:
-                    return [item["embedding"] for item in data["data"]]
-                if isinstance(data, dict) and "embedding" in data:
-                    # Some proxies might still return single-object
-                    return [data["embedding"]]
-
-                raise RuntimeError(f"Ollama returned unexpected response: {data}")
-
-            else:
-                # Native API: one request per text
-                out: List[List[float]] = []
-                for t in texts:
-                    payload = {"model": model, "input": t}
-                    r = await client.post(url, headers=headers, json=payload)
-                    self._raise_for_status(r)
+            # ---------- Try OpenAI-compatible batch once ----------
+            try:
+                oai_url = f"{base}/v1/embeddings"
+                oai_payload = {"model": model, "input": texts}
+                r = await client.post(oai_url, headers=headers, json=oai_payload)
+                if r.status_code < 400:
                     data = r.json()
-                    if isinstance(data, dict) and "embedding" in data:
-                        out.append(data["embedding"])
-                    elif isinstance(data, dict) and "data" in data:
-                        # Defensive: some builds expose OAI format even on /api
-                        out.append(data["data"][0]["embedding"])
-                    else:
-                        raise RuntimeError(f"Ollama returned unexpected response: {data}")
-                return out
+                    if isinstance(data, dict) and "data" in data:
+                        vecs = [row.get("embedding") for row in data["data"]]
+                        if all(isinstance(v, list) and len(v) > 0 for v in vecs):
+                            return vecs
+                        # If shapes look wrong, fall through to native
+            except Exception:
+                # Ignore and fall through to native
+                pass
+
+            # ---------- Native per-text with input→prompt fallback ----------
+            native_url = f"{base}/api/embeddings"
+            out: List[List[float]] = []
+            for t in texts:
+                # 1) try input
+                payload = {"model": model, "input": t}
+                r = await client.post(native_url, headers=headers, json=payload)
+                ok_vec = None
+                if r.status_code < 400:
+                    j = r.json() or {}
+                    v = j.get("embedding") or (j.get("data", [{}])[0].get("embedding") if isinstance(j.get("data"), list) and j["data"] else None)
+                    if isinstance(v, list) and len(v) > 0:
+                        ok_vec = v
+
+                # 2) if empty/missing, retry with prompt
+                if ok_vec is None:
+                    payload2 = {"model": model, "prompt": t}
+                    r2 = await client.post(native_url, headers=headers, json=payload2)
+                    j2 = r2.json() if r2.status_code < 400 else {}
+                    v2 = j2.get("embedding") or (j2.get("data", [{}])[0].get("embedding") if isinstance(j2.get("data"), list) and j2["data"] else None)
+                    if not (isinstance(v2, list) and len(v2) > 0):
+                        # Helpful error
+                        sample = json.dumps((j2 or j), separators=(",", ":"), ensure_ascii=False)
+                        if len(sample) > 300:
+                            sample = sample[:300] + "…"
+                        raise RuntimeError(
+                            f"Ollama returned no embedding for model={model}. "
+                            f"Tried input and prompt. Last payload preview: {sample}"
+                        )
+                    ok_vec = v2
+
+                out.append([float(x) for x in ok_vec])
+
+            return out
+
 
 
     
