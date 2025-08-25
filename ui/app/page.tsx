@@ -12,7 +12,34 @@ type ProviderInfo = {
   auth_required: boolean;
 };
 
-type PerModelParam = { temperature?: number; max_tokens?: number; min_tokens?: number };
+type PerModelParam = { 
+  temperature?: number; 
+  max_tokens?: number; 
+  min_tokens?: number;
+  // Enhanced Anthropic parameters
+  thinking_enabled?: boolean;
+  thinking_budget_tokens?: number;
+  top_k?: number;
+  top_p?: number;
+  stop_sequences?: string[];
+  //service_tier?: "auto" | "standard_only";
+  //tool_choice_type?: "auto" | "any" | "tool" | "none";
+  //user_id?: string;
+  // OpenAI parameters
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  seed?: number;
+  // Gemini parameters
+  candidate_count?: number;
+  safety_settings?: unknown[];
+  // Ollama parameters
+  mirostat?: number;
+  mirostat_eta?: number;
+  mirostat_tau?: number;
+  num_ctx?: number;
+  repeat_penalty?: number;
+};
+
 type ModelParamsMap = Record<string, PerModelParam>;
 
 type ProvidersResp = { providers: ProviderInfo[] };
@@ -46,10 +73,353 @@ type ModelChat = {
   currentResponse: string;
 };
 
+// Enhanced API request types
+type EnhancedChatRequest = {
+  messages: { role: string; content: string }[];
+  models: string[];
+  temperature?: number;
+  max_tokens?: number;
+  min_tokens?: number;
+  anthropic_params?: {
+    thinking_enabled?: boolean;
+    thinking_budget_tokens?: number;
+    top_k?: number;
+    top_p?: number;
+    stop_sequences?: string[];
+    //service_tier?: string;
+    //tool_choice_type?: string;
+    //user_id?: string;
+  };
+  openai_params?: {
+    top_p?: number;
+    frequency_penalty?: number;
+    presence_penalty?: number;
+    seed?: number;
+  };
+  gemini_params?: {
+    top_k?: number;
+    top_p?: number;
+    candidate_count?: number;
+    safety_settings?: unknown[];
+  };
+  ollama_params?: {
+    mirostat?: number;
+    mirostat_eta?: number;
+    mirostat_tau?: number;
+    num_ctx?: number;
+    repeat_penalty?: number;
+  };
+};
+
+// ---------- NEW: Multi-provider embeddings search response types ----------
+type MultiBucket = {
+  error?: string;
+  items: SearchResult[];
+  dataset_id?: string;
+  total_documents?: number;
+};
+type MultiSearchResponse = {
+  query: string;
+  results: Record<string, MultiBucket>; // key = embedding model name
+  duration_ms?: number;
+};
+
 // ---------------- Config ----------------
 const API_BASE = (process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "/backend");
 
-// ---------------- Page ----------------
+// ---------------- Component ----------------
+function ProviderParameterEditor({ 
+  model, 
+  providerType, 
+  params, 
+  onUpdate 
+}: {
+  model: string;
+  providerType: string;
+  params: PerModelParam;
+  onUpdate: (params: PerModelParam) => void;
+}) {
+  const updateParam = (key: keyof PerModelParam, value: unknown) => {
+    onUpdate({ ...params, [key]: value });
+  };
+
+  const formatStopSequences = (sequences?: string[]): string => {
+    return sequences ? sequences.join(', ') : '';
+  };
+
+  const parseStopSequences = (value: string): string[] => {
+    return value.split(',').map(s => s.trim()).filter(s => s.length > 0);
+  };
+
+  if (providerType === "anthropic") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-orange-600 dark:text-orange-400">Anthropic Parameters</h4>
+        
+        {/* Extended Thinking */}
+        <div className="bg-orange-50/50 dark:bg-orange-900/20 p-3 rounded-lg border border-orange-200 dark:border-orange-800">
+          <label className="flex items-center gap-2 mb-2">
+            <input
+              type="checkbox"
+              checked={params.thinking_enabled ?? false}
+              onChange={(e) => updateParam('thinking_enabled', e.target.checked)}
+              className="accent-orange-600 dark:accent-orange-500"
+            />
+            <span className="text-sm font-medium">Enable Extended Thinking</span>
+          </label>
+          
+          {params.thinking_enabled && (
+            <div>
+              <label className="block text-xs font-medium mb-1">Thinking Budget (tokens)</label>
+              <input
+                type="number"
+                min={1024}
+                value={params.thinking_budget_tokens ?? 2048}
+                onChange={(e) => updateParam('thinking_budget_tokens', Number(e.target.value))}
+                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                placeholder="2048"
+              />
+              <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+                Minimum 1024 tokens for thinking process
+              </p>
+            </div>
+          )}
+        </div>
+
+        {/* Sampling Parameters */}
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Top-K</label>
+            <input
+              type="number"
+              min={1}
+              value={params.top_k ?? ""}
+              onChange={(e) => updateParam('top_k', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="40"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Top-P</label>
+            <input
+              type="number"
+              step={0.1}
+              min={0}
+              max={1}
+              value={params.top_p ?? ""}
+              onChange={(e) => updateParam('top_p', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.9"
+            />
+          </div>
+        </div>
+
+        {/* Stop Sequences */}
+        <div>
+          <label className="block text-xs font-medium mb-1">Stop Sequences</label>
+          <input
+            type="text"
+            value={formatStopSequences(params.stop_sequences)}
+            onChange={(e) => updateParam('stop_sequences', parseStopSequences(e.target.value))}
+            className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+            placeholder="Human:, Assistant:, Stop"
+          />
+          <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
+            Comma-separated sequences that will stop generation
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (providerType === "openai") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-blue-600 dark:text-blue-400">OpenAI Parameters</h4>
+        
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Top-P</label>
+            <input
+              type="number"
+              step={0.1}
+              min={0}
+              max={1}
+              value={params.top_p ?? ""}
+              onChange={(e) => updateParam('top_p', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-blue-200 dark:border-blue-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.9"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Seed</label>
+            <input
+              type="number"
+              value={params.seed ?? ""}
+              onChange={(e) => updateParam('seed', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-blue-200 dark:border-blue-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="42"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Frequency Penalty</label>
+            <input
+              type="number"
+              step={0.1}
+              min={-2}
+              max={2}
+              value={params.frequency_penalty ?? ""}
+              onChange={(e) => updateParam('frequency_penalty', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-blue-200 dark:border-blue-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.0"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Presence Penalty</label>
+            <input
+              type="number"
+              step={0.1}
+              min={-2}
+              max={2}
+              value={params.presence_penalty ?? ""}
+              onChange={(e) => updateParam('presence_penalty', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-blue-200 dark:border-blue-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.0"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (providerType === "gemini") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-green-600 dark:text-green-400">Gemini Parameters</h4>
+        
+        <div className="grid grid-cols-3 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Top-K</label>
+            <input
+              type="number"
+              min={1}
+              value={params.top_k ?? ""}
+              onChange={(e) => updateParam('top_k', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-green-200 dark:border-green-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="40"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Top-P</label>
+            <input
+              type="number"
+              step={0.1}
+              min={0}
+              max={1}
+              value={params.top_p ?? ""}
+              onChange={(e) => updateParam('top_p', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-green-200 dark:border-green-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.9"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Candidates</label>
+            <input
+              type="number"
+              min={1}
+              max={4}
+              value={params.candidate_count ?? ""}
+              onChange={(e) => updateParam('candidate_count', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-green-200 dark:border-green-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="1"
+            />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (providerType === "ollama") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-purple-600 dark:text-purple-400">Ollama Parameters</h4>
+        
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Mirostat</label>
+            <select
+              value={params.mirostat ?? ""}
+              onChange={(e) => updateParam('mirostat', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-purple-200 dark:border-purple-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+            >
+              <option value="">Off</option>
+              <option value="1">Mirostat 1</option>
+              <option value="2">Mirostat 2</option>
+            </select>
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Context Size</label>
+            <input
+              type="number"
+              min={1}
+              value={params.num_ctx ?? ""}
+              onChange={(e) => updateParam('num_ctx', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-purple-200 dark:border-purple-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="4096"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium mb-1">Mirostat Eta</label>
+            <input
+              type="number"
+              step={0.01}
+              min={0}
+              value={params.mirostat_eta ?? ""}
+              onChange={(e) => updateParam('mirostat_eta', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-purple-200 dark:border-purple-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="0.1"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium mb-1">Mirostat Tau</label>
+            <input
+              type="number"
+              step={0.1}
+              min={0}
+              value={params.mirostat_tau ?? ""}
+              onChange={(e) => updateParam('mirostat_tau', e.target.value ? Number(e.target.value) : undefined)}
+              className="w-full rounded-md border border-purple-200 dark:border-purple-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+              placeholder="5.0"
+            />
+          </div>
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1">Repeat Penalty</label>
+          <input
+            type="number"
+            step={0.1}
+            min={0}
+            value={params.repeat_penalty ?? ""}
+            onChange={(e) => updateParam('repeat_penalty', e.target.value ? Number(e.target.value) : undefined)}
+            className="w-full rounded-md border border-purple-200 dark:border-purple-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+            placeholder="1.1"
+          />
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// ---------------- Main Page Component ----------------
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
   
@@ -67,12 +437,12 @@ export default function Page() {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [endedAt, setEndedAt] = useState<number | null>(null);
 
-  // Interactive chat functionality (new)
+  // Interactive chat functionality
   const [activeModel, setActiveModel] = useState<string | null>(null);
   const [modelChats, setModelChats] = useState<Record<string, ModelChat>>({});
   const [interactivePrompt, setInteractivePrompt] = useState<string>("");
 
-  // Embedding functionality (existing)
+  // Embedding functionality
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
@@ -93,6 +463,9 @@ export default function Page() {
     startedAt: number;
   } | null>(null);
 
+  // ---------- NEW: Multi-provider results state ----------
+  const [multiSearchResults, setMultiSearchResults] = useState<MultiSearchResponse | null>(null);
+
   const streamAbortRef = useRef<AbortController | null>(null);
   const interactiveAbortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
@@ -101,27 +474,63 @@ export default function Page() {
   // Guard against out-of-order search responses
   const requestIdRef = useRef(0);
 
-  // global + per-model params
+  // Enhanced parameters
   const [modelParams, setModelParams] = useState<ModelParamsMap>({});
-  const [globalTemp, setGlobalTemp] = useState<number>(0.7);
-  const [globalMax, setGlobalMax] = useState<number>(8192);
+  const [globalTemp, setGlobalTemp] = useState<number | undefined>(undefined);
+  const [globalMax, setGlobalMax] = useState<number | undefined>(undefined);
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
+  // Always use Enhanced API
+  const useEnhancedAPI = true;
+
+  const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+
+  // Helper function to get provider type for a model
+  const modelToProvider = useMemo(() => {
+    const map: Record<string, string> = {};
+    providers.forEach((p) => {
+      (p.models || []).forEach((m) => { map[m] = p.type; });
+      (p.embedding_models || []).forEach((m) => { map[m] = p.type; });
+    });
+    return map;
+  }, [providers]);
+
+  const getProviderType = useCallback(
+    (modelName: string) => modelToProvider[modelName] ?? "unknown",
+    [modelToProvider]
+  );
+
+  // ---------- NEW: derive base dataset id helper ----------
+  function inferBaseDatasetId(fullId: string, model: string): string {
+    // Datasets are saved as `${dataset_id}_${embedding_model}` during upload.
+    const suffix = "_" + model;
+    return fullId.endsWith(suffix) ? fullId.slice(0, -suffix.length) : fullId;
+  }
 
   const updateParam = useCallback(
-    (model: string, key: keyof PerModelParam, value: number | undefined) => {
-      setModelParams((prev) => ({ ...prev, [model]: { ...(prev[model] || {}), [key]: value } }));
+    (model: string, params: PerModelParam) => {
+      setModelParams((prev) => ({ ...prev, [model]: params }));
     },
     []
   );
+
+  const toggleModelExpansion = useCallback((model: string) => {
+    setExpandedModels(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(model)) {
+        newSet.delete(model);
+      } else {
+        newSet.add(model);
+      }
+      return newSet;
+    });
+  }, []);
 
   // -------- Interactive Chat Functions --------
   const openModelChat = useCallback((model: string) => {
     setActiveModel(model);
     if (!modelChats[model]) {
-      // Initialize chat with the original prompt and response if available
       const initialMessages: ChatMessage[] = [];
       
-      // Add the original prompt if it exists
       if (prompt.trim()) {
         initialMessages.push({
           role: "user",
@@ -130,7 +539,6 @@ export default function Page() {
         });
       }
       
-      // Add the model's response if it exists and has content
       const modelAnswer = answers[model];
       if (modelAnswer?.answer && !modelAnswer.error) {
         initialMessages.push({
@@ -162,7 +570,6 @@ export default function Page() {
     const message = interactivePrompt.trim();
     setInteractivePrompt("");
 
-    // Add user message
     setModelChats(prev => ({
       ...prev,
       [activeModel]: {
@@ -176,35 +583,96 @@ export default function Page() {
       }
     }));
 
-    // Abort any existing stream
     interactiveAbortRef.current?.abort();
     const controller = new AbortController();
     interactiveAbortRef.current = controller;
 
     try {
-      // Build conversation history for context
       const currentChat = modelChats[activeModel];
       const conversationHistory = [
         ...currentChat.messages,
         { role: "user" as const, content: message, timestamp: Date.now() }
       ];
 
-      // Format messages for the new API endpoint
       const apiMessages = conversationHistory.map(msg => ({
         role: msg.role,
         content: msg.content
       }));
 
-      // Use the new OpenAI-compatible endpoint
-      const body = JSON.stringify({
-        model: activeModel,
-        messages: apiMessages,
-        temperature: modelParams[activeModel]?.temperature ?? globalTemp,
-        max_tokens: modelParams[activeModel]?.max_tokens ?? globalMax,
-        stream: false
-      });
+      // Use enhanced API if enabled and has provider-specific params
+      const modelParam = modelParams[activeModel] || {};
+      const providerType = getProviderType(activeModel);
+      const hasProviderParams = Object.keys(modelParam).some(key => 
+        !['temperature', 'max_tokens', 'min_tokens'].includes(key)
+      );
 
-      const res = await fetch(`${API_BASE}/v1/chat/completions`, {
+      let body: string | undefined;
+      let endpoint: string;
+
+      if (useEnhancedAPI || hasProviderParams) {
+        // Use enhanced API
+        endpoint = `${API_BASE}/v2/chat/completions/enhanced`;
+        
+        const enhancedRequest: EnhancedChatRequest = {
+          messages: apiMessages,
+          models: [activeModel],
+          ...(modelParam.temperature ?? globalTemp) !== undefined && { temperature: (modelParam.temperature ?? globalTemp) },
+          ...(modelParam.max_tokens ?? globalMax) !== undefined && { max_tokens: (modelParam.max_tokens ?? globalMax) },
+          ...(modelParam.min_tokens ?? globalMin) !== undefined && { min_tokens: (modelParam.min_tokens ?? globalMin) },
+        } as EnhancedChatRequest;
+
+        // Add provider-specific parameters
+        if (providerType === "anthropic") {
+          enhancedRequest.anthropic_params = {
+            thinking_enabled: modelParam.thinking_enabled,
+            thinking_budget_tokens: modelParam.thinking_budget_tokens,
+            top_k: modelParam.top_k,
+            top_p: modelParam.top_p,
+            stop_sequences: modelParam.stop_sequences,
+            // service_tier: modelParam.service_tier,
+            // tool_choice_type: modelParam.tool_choice_type,
+          };
+        } else if (providerType === "openai") {
+          enhancedRequest.openai_params = {
+            top_p: modelParam.top_p,
+            frequency_penalty: modelParam.frequency_penalty,
+            presence_penalty: modelParam.presence_penalty,
+            seed: modelParam.seed,
+          };
+        } else if (providerType === "gemini") {
+          enhancedRequest.gemini_params = {
+            top_k: modelParam.top_k,
+            top_p: modelParam.top_p,
+            candidate_count: modelParam.candidate_count,
+            safety_settings: modelParam.safety_settings,
+          };
+        } else if (providerType === "ollama") {
+          enhancedRequest.ollama_params = {
+            mirostat: modelParam.mirostat,
+            mirostat_eta: modelParam.mirostat_eta,
+            mirostat_tau: modelParam.mirostat_tau,
+            num_ctx: modelParam.num_ctx,
+            repeat_penalty: modelParam.repeat_penalty,
+          };
+        }
+
+        body = JSON.stringify(enhancedRequest);
+      } else {
+        // Use standard OpenAI-compatible API
+        endpoint = `${API_BASE}/v1/chat/completions`;
+        const stdPayload: Record<string, unknown> = {
+          model: activeModel,
+          messages: apiMessages,
+        };
+        const temp = modelParam.temperature ?? globalTemp;
+        const maxTok = modelParam.max_tokens ?? globalMax;
+        if (temp !== undefined) stdPayload.temperature = temp;
+        if (maxTok !== undefined) stdPayload.max_tokens = maxTok;
+        stdPayload.stream = false;
+        body = JSON.stringify(stdPayload);
+      }
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body,
@@ -217,9 +685,16 @@ export default function Page() {
       }
 
       const result = await res.json();
-      const assistantMessage = result.choices[0]?.message?.content || "No response";
+      let assistantMessage: string;
 
-      // Add assistant message
+      if (useEnhancedAPI || hasProviderParams) {
+        // Enhanced API response format
+        assistantMessage = result.answers?.[activeModel]?.answer || "No response";
+      } else {
+        // Standard OpenAI response format
+        assistantMessage = result.choices[0]?.message?.content || "No response";
+      }
+
       setModelChats(prev => ({
         ...prev,
         [activeModel]: {
@@ -257,7 +732,7 @@ export default function Page() {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, modelParams, globalTemp, globalMax, globalMin, modelChats]);
+  }, [activeModel, interactivePrompt, modelParams, globalTemp, globalMax, globalMin, modelChats, getProviderType]);
 
   // -------- Load providers/models once --------
   useEffect(() => {
@@ -303,14 +778,14 @@ export default function Page() {
     }
   }, [activeTab, loadDatasets]);
 
-  // -------- Chat helpers (existing) --------
+  // -------- Chat helpers --------
   const toggleModel = (m: string) =>
     setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
 
   const selectAll = () => setSelected(allModels);
   const clearAll = () => setSelected([]);
 
-  // -------- Embedding helpers (existing) --------
+  // -------- Embedding helpers --------
   const toggleEmbeddingModel = (m: string) =>
     setSelectedEmbeddingModels((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
 
@@ -429,6 +904,57 @@ export default function Page() {
     }
   }, [searchQuery, selectedDataset, selectedSearchModel]);
 
+  // ---------- REPLACEMENT: Multi-provider compare (self-dataset) ----------
+  const performMultiSearch = useCallback(async () => {
+    if (!searchQuery.trim()) {
+      alert("Please provide a search query.");
+      return;
+    }
+    if (selectedEmbeddingModels.length === 0) {
+      alert("Select at least one embedding model (left rail) to compare.");
+      return;
+    }
+
+    setIsSearching(true);
+    setMultiSearchResults(null);
+    const myId = ++requestIdRef.current;
+
+    try {
+      const res = await fetch(`${API_BASE}/v2/search/self-dataset-compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: searchQuery,
+          embedding_models: selectedEmbeddingModels,
+          top_k: 5,
+          // no dataset_base — let backend auto-detect
+        }),
+      });
+
+      if (!res.ok) {
+        let msg = await res.text();
+        try {
+          const j = JSON.parse(msg);
+          msg = j.detail || j.message || msg;
+        } catch {}
+        throw new Error(msg || `HTTP ${res.status}`);
+      }
+
+      const json: MultiSearchResponse = await res.json();
+      if (myId === requestIdRef.current) setMultiSearchResults(json);
+    } catch (err) {
+      console.error("Self-dataset compare failed:", err);
+      if (myId === requestIdRef.current) {
+        alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setMultiSearchResults(null);
+      }
+    } finally {
+      if (myId === requestIdRef.current) setIsSearching(false);
+    }
+  }, [searchQuery, selectedEmbeddingModels, API_BASE]);
+
+
+
   const deleteDataset = useCallback(async (id: string) => {
     if (!confirm(`Are you sure you want to delete dataset "${id}"?`)) return;
 
@@ -453,7 +979,147 @@ export default function Page() {
     setEndedAt(null);
   }, [selected]);
 
-  // -------- Streaming runner (JSONL) --------
+  // -------- Enhanced API runner --------
+  function pruneUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (v !== undefined) out[k] = v;
+    }
+    return out as Partial<T>;
+  }  
+  // 2) Replace your current runEnhancedPrompt with this version (or edit in place)
+  const runEnhancedPrompt = useCallback(async () => {
+    if (!canRun) return;
+
+    setIsRunning(true);
+    resetRun();
+
+    try {
+      // Build per-model overrides: include only defined keys
+      const perModel: Record<string, Partial<PerModelParam>> = {};
+      for (const m of selected) {
+        const p = modelParams[m] || {};
+        const trimmed = pruneUndefined({
+          temperature: p.temperature,
+          max_tokens: p.max_tokens,
+          min_tokens: p.min_tokens,
+        });
+        if (Object.keys(trimmed).length > 0) perModel[m] = trimmed;
+      }
+
+      const enhancedRequest: EnhancedChatRequest = {
+        messages: [{ role: "user", content: prompt }],
+        models: selected,
+        ...(globalTemp !== undefined && { temperature: globalTemp }),
+        ...(globalMax !== undefined && { max_tokens: globalMax }),
+        ...(globalMin !== undefined && { min_tokens: globalMin }),
+      };
+
+      // 👉 Only attach model_params if there’s at least one override
+      if (Object.keys(perModel).length > 0) {
+        // @ts-expect-error backend supports model_params
+        enhancedRequest.model_params = perModel;
+      }
+
+      // Group models by provider type
+      const anthropicModels = selected.filter(m => getProviderType(m) === "anthropic");
+      const openaiModels    = selected.filter(m => getProviderType(m) === "openai");
+      const geminiModels    = selected.filter(m => getProviderType(m) === "gemini");
+      const ollamaModels    = selected.filter(m => getProviderType(m) === "ollama");
+
+      // For each provider, collect only defined keys across selected models.
+      if (anthropicModels.length > 0) {
+        const merged = pruneUndefined(
+          anthropicModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
+            acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
+            acc.top_k = acc.top_k ?? p.top_k;
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.stop_sequences = acc.stop_sequences ?? p.stop_sequences;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["anthropic_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.anthropic_params = merged;
+      }
+
+      if (openaiModels.length > 0) {
+        const merged = pruneUndefined(
+          openaiModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.frequency_penalty = acc.frequency_penalty ?? p.frequency_penalty;
+            acc.presence_penalty = acc.presence_penalty ?? p.presence_penalty;
+            acc.seed = acc.seed ?? p.seed;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["openai_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.openai_params = merged;
+      }
+
+      if (geminiModels.length > 0) {
+        const merged = pruneUndefined(
+          geminiModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.top_k = acc.top_k ?? p.top_k;
+            acc.top_p = acc.top_p ?? p.top_p;
+            acc.candidate_count = acc.candidate_count ?? p.candidate_count;
+            acc.safety_settings = acc.safety_settings ?? p.safety_settings;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["gemini_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.gemini_params = merged;
+      }
+
+      if (ollamaModels.length > 0) {
+        const merged = pruneUndefined(
+          ollamaModels.reduce((acc, model) => {
+            const p = modelParams[model] || {};
+            acc.mirostat = acc.mirostat ?? p.mirostat;
+            acc.mirostat_eta = acc.mirostat_eta ?? p.mirostat_eta;
+            acc.mirostat_tau = acc.mirostat_tau ?? p.mirostat_tau;
+            acc.num_ctx = acc.num_ctx ?? p.num_ctx;
+            acc.repeat_penalty = acc.repeat_penalty ?? p.repeat_penalty;
+            return acc;
+          }, {} as NonNullable<EnhancedChatRequest["ollama_params"]>)
+        );
+        if (Object.keys(merged).length > 0) enhancedRequest.ollama_params = merged;
+      }
+
+      const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(enhancedRequest),
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(error.detail || `HTTP ${res.status}`);
+      }
+
+      const result = await res.json();
+
+      const newAnswers: AskAnswers = {};
+      for (const model of selected) {
+        const modelResult = result.answers[model];
+        newAnswers[model] = {
+          answer: modelResult?.answer || "",
+          error: modelResult?.error,
+          latency_ms: modelResult?.latency_ms || 0,
+        };
+      }
+
+      setAnswers(newAnswers);
+      setEndedAt(Date.now());
+    } catch (err) {
+      console.error("Enhanced API error:", err);
+      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setIsRunning(false);
+    }
+  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, getProviderType, resetRun]);
+
+  // -------- Streaming runner (JSONL) - existing --------
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
 
@@ -482,19 +1148,19 @@ export default function Page() {
     };
 
     try {
-      const body = JSON.stringify({
+      const ndjsonPayload: Record<string, unknown> = {
         prompt,
         models: selected,
-        temperature: globalTemp,
-        max_tokens: globalMax,
-        min_tokens: globalMin,
         model_params: modelParams,
-      });
+      };
+      if (globalTemp !== undefined) ndjsonPayload.temperature = globalTemp;
+      if (globalMax !== undefined) ndjsonPayload.max_tokens = globalMax;
+      if (globalMin !== undefined) ndjsonPayload.min_tokens = globalMin;
 
       const res = await fetch(`${API_BASE}/ask/ndjson`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: JSON.stringify(ndjsonPayload),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
@@ -546,15 +1212,28 @@ export default function Page() {
     }
   }, [canRun, prompt, selected, resetRun, globalTemp, globalMax, globalMin, modelParams]);
 
+  // Decide which runner to use
+  const executePrompt = useCallback(async () => {
+    await runEnhancedPrompt();
+  }, [runEnhancedPrompt]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const onKey = (evt: KeyboardEvent) => {
+      // NEW: Shift+Enter => multi-compare on Embeddings tab
+      if ((evt.metaKey || evt.ctrlKey) && evt.shiftKey && evt.key === "Enter") {
+        evt.preventDefault();
+        if (activeTab === "embedding" && searchQuery.trim() && selectedEmbeddingModels.length > 0) {
+          void performMultiSearch();
+          return;
+        }
+      }
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
         if (activeModel && interactivePrompt.trim()) {
           void sendInteractiveMessage();
         } else if (activeTab === "chat" && canRun) {
-          void runPrompt();
+          void executePrompt();
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
         }
@@ -565,7 +1244,7 @@ export default function Page() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [canRun, runPrompt, activeTab, searchQuery, performSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
+  }, [canRun, executePrompt, activeTab, searchQuery, performSearch, performMultiSearch, activeModel, interactivePrompt, sendInteractiveMessage, closeModelChat]);
 
   // Small UX helpers
   const anyErrors = useMemo(() => Object.values(answers).some((a) => a?.error), [answers]);
@@ -575,7 +1254,7 @@ export default function Page() {
     if (endedAt) return Math.max(0, endedAt - startedAt);
     return 0;
   }, [startedAt, endedAt, isRunning]);
-
+  
   return (
     <div className="min-h-screen grid grid-rows-[auto_auto_1fr_auto] gap-6 p-6 sm:p-8 bg-white text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
       {/* Interactive Chat Modal */}
@@ -600,7 +1279,6 @@ export default function Page() {
             {/* Chat Messages */}
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {modelChats[activeModel]?.messages.map((message, index) => {
-                // Check if this is from the original comparison (first user message matches original prompt)
                 const isFromOriginalRun = index <= 1 && prompt.trim() && message.content === prompt.trim();
                 const isOriginalResponse = index === 1 && modelChats[activeModel]?.messages[0]?.content === prompt.trim();
                 
@@ -632,7 +1310,6 @@ export default function Page() {
                 );
               })}
 
-              {/* Current streaming response */}
               {modelChats[activeModel]?.isStreaming && modelChats[activeModel]?.currentResponse && (
                 <div className="flex justify-start">
                   <div className="max-w-[80%] rounded-2xl px-4 py-2 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100">
@@ -681,10 +1358,10 @@ export default function Page() {
       <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-semibold tracking-tight text-orange-600 dark:text-orange-400">
-            Multi-LLM AI Platform
+            CompareLLM
           </h1>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
-            Chat with multiple models and perform semantic search with embeddings.
+            Chat with multiple models using provider-specific parameters and perform semantic search.
           </p>
         </div>
         <div className="text-sm text-zinc-500 dark:text-zinc-400">
@@ -718,7 +1395,7 @@ export default function Page() {
 
       {/* Tab Content */}
       {activeTab === "chat" && (
-        <main className="grid grid-cols-1 xl:grid-cols-[360px_1fr] gap-6 items-start">
+        <main className="grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-6 items-start">
           {/* Left rail: Chat Controls */}
           <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
             <div className="space-y-4">
@@ -729,7 +1406,6 @@ export default function Page() {
                 value={prompt}
                 onChange={(evt) => setPrompt(evt.target.value)}
               />
-
               <div className="flex items-center justify-between">
                 <label className="text-sm font-medium">Models</label>
                 <div className="flex gap-2 text-xs">
@@ -748,24 +1424,38 @@ export default function Page() {
                 </div>
               </div>
 
-              <div className="max-h-[280px] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+              <div className="max-h-[200px] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 grid grid-cols-1 gap-1">
                 {allModels.length === 0 && (
                   <div className="text-sm text-zinc-500 dark:text-zinc-400">No models discovered yet.</div>
                 )}
-                {allModels.map((m) => (
-                  <label
-                    key={m}
-                    className="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-400/10"
-                  >
-                    <input
-                      type="checkbox"
-                      className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
-                      checked={selected.includes(m)}
-                      onChange={() => toggleModel(m)}
-                    />
-                    <span className="text-sm font-mono">{m}</span>
-                  </label>
-                ))}
+                {allModels.map((m) => {
+                  const providerType = getProviderType(m);
+                  const providerColor = {
+                    anthropic: "text-orange-600 dark:text-orange-400",
+                    openai: "text-blue-600 dark:text-blue-400", 
+                    gemini: "text-green-600 dark:text-green-400",
+                    ollama: "text-purple-600 dark:text-purple-400",
+                    unknown: "text-zinc-600 dark:text-zinc-400"
+                  }[providerType] || "text-zinc-600 dark:text-zinc-400";
+                  
+                  return (
+                    <label
+                      key={m}
+                      className="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-400/10"
+                    >
+                      <input
+                        type="checkbox"
+                        className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
+                        checked={selected.includes(m)}
+                        onChange={() => toggleModel(m)}
+                      />
+                      <span className="text-sm font-mono flex-1">{m}</span>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${providerColor} bg-current/10`}>
+                        {providerType}
+                      </span>
+                    </label>
+                  );
+                })}
               </div>
 
               {/* Global defaults */}
@@ -774,8 +1464,9 @@ export default function Page() {
                   <label className="block mb-1 font-medium">Global temp</label>
                   <input
                     type="number" step={0.1} min={0} max={2}
-                    value={globalTemp}
-                    onChange={(e) => setGlobalTemp(Number(e.target.value))}
+                    value={globalTemp ?? ""}
+                    placeholder="Model default"
+                    onChange={(e) => setGlobalTemp(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
@@ -783,8 +1474,9 @@ export default function Page() {
                   <label className="block mb-1 font-medium">Global max_tokens</label>
                   <input
                     type="number" min={1}
-                    value={globalMax}
-                    onChange={(e) => setGlobalMax(Number(e.target.value))}
+                    value={globalMax ?? ""}
+                    placeholder="Model default"
+                    onChange={(e) => setGlobalMax(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
@@ -793,97 +1485,196 @@ export default function Page() {
                   <input
                     type="number" min={1}
                     value={globalMin ?? ""}
-                    placeholder="optional"
+                    placeholder="Model default"
                     onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
               </div>
 
-              {/* Per-model overrides */}
-              <div className="mt-3 space-y-2">
-                {allModels.map((m) => (
-                  <details
-                    key={m}
-                    className="rounded-lg border border-orange-200 dark:border-orange-500/40 p-2 bg-orange-50/60 dark:bg-orange-400/10"
-                  >
-                    <summary className="cursor-pointer flex items-center justify-between">
-                      <span className="font-mono text-sm">{m}</span>
-                      <span className="text-xs text-zinc-500 dark:text-zinc-400">Overrides</span>
-                    </summary>
-                    <div className="mt-2 grid grid-cols-3 gap-3 text-sm">
-                      <div>
-                        <label className="block mb-1">temp</label>
-                        <input
-                          type="number" step={0.1} min={0} max={2}
-                          value={modelParams[m]?.temperature ?? ""}
-                          placeholder={`↳ ${globalTemp}`}
-                          onChange={(e) => updateParam(m, "temperature", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
+              {/* Per-model parameters with enhanced controls */}
+              <div className="space-y-2">
+                <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
+                {allModels.map((m) => {
+                  const providerType = getProviderType(m);
+                  const isExpanded = expandedModels.has(m);
+                  const hasParams = modelParams[m] && Object.keys(modelParams[m]).length > 0;
+                  
+                  return (
+                    <div
+                      key={m}
+                      className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5"
+                    >
+                      <div
+                        className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
+                        onClick={() => toggleModelExpansion(m)}
+                      >
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-sm">{m}</span>
+                          {hasParams && (
+                            <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200">
+                              configured
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs px-1.5 py-0.5 rounded ${
+                            providerType === "anthropic" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400" :
+                            providerType === "openai" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400" :
+                            providerType === "gemini" ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" :
+                            providerType === "ollama" ? "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400" :
+                            "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-400"
+                          }`}>
+                            {providerType}
+                          </span>
+                          <svg
+                            className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                            fill="none"
+                            stroke="currentColor"
+                            viewBox="0 0 24 24"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </div>
                       </div>
-                      <div>
-                        <label className="block mb-1">max_tokens</label>
-                        <input
-                          type="number" min={1}
-                          value={modelParams[m]?.max_tokens ?? ""}
-                          placeholder={`↳ ${globalMax}`}
-                          onChange={(e) => updateParam(m, "max_tokens", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
-                      </div>
-                      <div>
-                        <label className="block mb-1">min_tokens</label>
-                        <input
-                          type="number" min={1}
-                          value={modelParams[m]?.min_tokens ?? ""}
-                          placeholder={globalMin ? `↳ ${globalMin}` : "optional"}
-                          onChange={(e) => updateParam(m, "min_tokens", e.target.value ? Number(e.target.value) : undefined)}
-                          className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                        />
-                      </div>
+                      
+                      {isExpanded && (
+                        <div className="px-3 pb-3 border-t border-orange-200 dark:border-orange-700">
+                          {/* Basic parameters */}
+                          <div className="grid grid-cols-3 gap-3 mb-4 mt-3">
+                            <div>
+                              <label className="block mb-1 text-xs font-medium">Temperature</label>
+                              <input
+                                type="number" step={0.1} min={0} max={2}
+                                value={modelParams[m]?.temperature ?? ""}
+                                placeholder={`↳ ${globalTemp ?? "backend default"}`}
+                                onChange={(e) => updateParam(m, { 
+                                  ...modelParams[m], 
+                                  temperature: e.target.value ? Number(e.target.value) : undefined 
+                                })}
+                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block mb-1 text-xs font-medium">Max Tokens</label>
+                            <input
+                                type="number" min={1}
+                                value={modelParams[m]?.max_tokens ?? ""}
+                                placeholder={`↳ ${globalMax ?? "backend default"}`}
+                                onChange={(e) => updateParam(m, { 
+                                  ...modelParams[m], 
+                                  max_tokens: e.target.value ? Number(e.target.value) : undefined 
+                                })}
+                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                              />
+                            </div>
+                            <div>
+                              <label className="block mb-1 text-xs font-medium">Min Tokens</label>
+                              <input
+                                type="number" min={1}
+                                value={modelParams[m]?.min_tokens ?? ""}
+                                placeholder={globalMin ? `↳ ${globalMin}` : "optional"}
+                                onChange={(e) => updateParam(m, { 
+                                  ...modelParams[m], 
+                                  min_tokens: e.target.value ? Number(e.target.value) : undefined 
+                                })}
+                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                              />
+                            </div>
+                          </div>
+
+                          {/* Provider-specific parameters */}
+                          <ProviderParameterEditor
+                            model={m}
+                            providerType={providerType}
+                            params={modelParams[m] || {}}
+                            onUpdate={(params) => updateParam(m, params)}
+                          />
+                          
+                          {/* Clear parameters button */}
+                          {hasParams && (
+                            <div className="mt-3 pt-3 border-t border-orange-200 dark:border-orange-700">
+                              <button
+                                onClick={() => updateParam(m, {})}
+                                className="text-xs px-2 py-1 rounded-md border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
+                              >
+                                Clear all parameters
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
-                  </details>
-                ))}
+                  );
+                })}
               </div>
 
               <button
-                onClick={() => void runPrompt()}
+                onClick={() => void executePrompt()}
                 disabled={!canRun}
                 className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
               >
-                {isRunning ? "Running…" : "Run prompt"}
+                {isRunning ? "Running…" : "Run"}
               </button>
             </div>
           </section>
 
           {/* Right rail: Results */}
           <section className="space-y-4">
-            {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => (
-              <div
-                key={model}
-                className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
-                onClick={() => openModelChat(model)}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <h2 className="text-sm font-semibold font-mono">{model}</h2>
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                      {error ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
-                    </span>
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                      <svg className="w-4 h-4 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.001 8.001 0 01-7.93-6.94c-.04-.24-.04-.46-.04-.68l.01-.08c.05-4.345 3.578-7.88 7.93-7.93.24 0 .46.04.68.04.08 0 .16-.01.24-.01" />
-                      </svg>
+            {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => {
+              const providerType = getProviderType(model);
+              const modelParams_forModel = modelParams[model] || {};
+              const hasEnhancedParams = Object.keys(modelParams_forModel).some(key => 
+                !['temperature', 'max_tokens', 'min_tokens'].includes(key)
+              );
+              
+              return (
+                <div
+                  key={model}
+                  className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
+                  onClick={() => openModelChat(model)}
+                >
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-sm font-semibold font-mono">{model}</h2>
+                      <span className={`text-xs px-1.5 py-0.5 rounded ${
+                        providerType === "anthropic" ? "bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400" :
+                        providerType === "openai" ? "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400" :
+                        providerType === "gemini" ? "bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400" :
+                        providerType === "ollama" ? "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400" :
+                        "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-400"
+                      }`}>
+                        {providerType}
+                      </span>
+                      {hasEnhancedParams && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400">
+                          enhanced
+                        </span>
+                      )}
+                      {modelParams_forModel.thinking_enabled && (
+                        <span className="text-xs px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400">
+                          🧠 thinking
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-zinc-500 dark:text-zinc-400">
+                        {error ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
+                      </span>
+                      <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                        <svg className="w-4 h-4 text-orange-600 dark:text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-3.582 8-8 8a8.001 8.001 0 01-7.93-6.94c-.04-.24-.04-.46-.04-.68l.01-.08c.05-4.345 3.578-7.88 7.93-7.93.24 0 .46.04.68.04.08 0 .16-.01.24-.01" />
+                        </svg>
+                      </div>
                     </div>
                   </div>
+                  <pre className="whitespace-pre-wrap text-sm">{error ? error : answer}</pre>
+                  <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity">
+                    Click to continue chatting with this model
+                  </div>
                 </div>
-                <pre className="whitespace-pre-wrap text-sm">{error ? error : answer}</pre>
-                <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity">
-                  Click to continue chatting with this model
-                </div>
-              </div>
-            ))}
+              );
+            })}
             <div ref={bottomRef} />
           </section>
         </main>
@@ -1055,6 +1846,19 @@ export default function Page() {
                 >
                   {isSearching ? "Searching…" : "Search"}
                 </button>
+
+                {/* NEW: Compare button */}
+                <button
+                  onClick={performMultiSearch}
+                  disabled={
+                    isSearching ||
+                    !searchQuery.trim() ||
+                    selectedEmbeddingModels.length === 0
+                  }
+                  className="mt-2 w-full rounded-xl py-2 px-4 font-medium text-white bg-purple-600 hover:bg-purple-700 dark:bg-purple-500 dark:hover:bg-purple-600 transition disabled:opacity-50"
+                >
+                  {isSearching ? "Comparing…" : `Compare Across Models (${selectedEmbeddingModels.length})`}
+                </button>
               </div>
             </div>
 
@@ -1091,6 +1895,7 @@ export default function Page() {
 
           {/* Right rail: Search Results */}
           <section className="space-y-4">
+            {/* Single-model block (existing) */}
             {searchResults.length > 0 && (
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
                 <h3 className="text-lg font-semibold mb-4 text-orange-600 dark:text-orange-400">
@@ -1134,7 +1939,98 @@ export default function Page() {
               </div>
             )}
 
-            {searchResults.length === 0 && searchQuery && !isSearching && (
+            {/* NEW: Side-by-side multi-provider results */}
+            {multiSearchResults && (
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="text-lg font-semibold text-purple-600 dark:text-purple-400">
+                    Side-by-Side • “{multiSearchResults.query}”
+                  </h3>
+                  {typeof multiSearchResults.duration_ms === "number" && (
+                    <span className="text-xs px-2 py-1 rounded-full bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300">
+                      {multiSearchResults.duration_ms} ms
+                    </span>
+                  )}
+                </div>
+
+                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {selectedEmbeddingModels.map((model) => {
+                    const bucket = multiSearchResults.results[model];
+                    const count = bucket?.items?.length ?? 0;
+                    const statusPill = bucket?.error ? (
+                      <span className="text-xs px-2 py-1 rounded-full bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400">
+                        Missing
+                      </span>
+                    ) : (
+                      <span className="text-xs px-2 py-1 rounded-full bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400">
+                        {count} hit{count === 1 ? "" : "s"}
+                      </span>
+                    );
+
+                    return (
+                      <div
+                        key={model}
+                        className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800/50 p-3"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-semibold font-mono">{model}</span>
+                            {bucket?.dataset_id && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-200 dark:bg-zinc-700 text-zinc-700 dark:text-zinc-300">
+                                {bucket.dataset_id}
+                              </span>
+                            )}
+                          </div>
+                          {statusPill}
+                        </div>
+
+                        {bucket?.error && (
+                          <p className="text-xs text-red-600 dark:text-red-400 mb-2">{bucket.error}</p>
+                        )}
+
+                        <div className="space-y-3">
+                          {(bucket?.items ?? []).map((r, idx) => (
+                            <div
+                              key={idx}
+                              className="p-3 rounded-lg border border-zinc-200 dark:border-zinc-700 bg-white/60 dark:bg-zinc-900/50"
+                            >
+                              <div className="flex items-center justify-between mb-1">
+                                <span className="text-xs font-medium">#{idx + 1}</span>
+                                <span className="text-xs px-2 py-0.5 rounded bg-purple-50 dark:bg-purple-900/40 text-purple-700 dark:text-purple-300">
+                                  {(r.similarity_score * 100).toFixed(1)}%
+                                </span>
+                              </div>
+
+                              <div className="text-xs space-y-1">
+                                {Object.entries(r).map(([k, v]) => {
+                                  if (k === "similarity_score" || k === "embedding" || k.startsWith("_")) return null;
+                                  const val =
+                                    typeof v === "string" && v.length > 200 ? v.slice(0, 200) + "…" : String(v);
+                                  return (
+                                    <div key={k}>
+                                      <span className="font-medium text-zinc-600 dark:text-zinc-400">{k}:</span>{" "}
+                                      <span className="text-zinc-900 dark:text-zinc-100">{val}</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+
+                          {(!bucket || (bucket.items?.length ?? 0) === 0) && !bucket?.error && (
+                            <div className="text-xs text-zinc-500 dark:text-zinc-400">
+                              No results returned for this model.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {searchResults.length === 0 && !multiSearchResults && searchQuery && !isSearching && (
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-8 bg-white dark:bg-zinc-950 shadow-sm text-center">
                 <p className="text-zinc-500 dark:text-zinc-400">No results found for your search query.</p>
               </div>
@@ -1155,7 +2051,7 @@ export default function Page() {
       <footer className="text-xs text-zinc-500 dark:text-zinc-400 flex justify-between">
         {activeTab === "chat" ? (
           <>
-            <span>{selected.length} selected</span>
+            <span>{selected.length} selected • {useEnhancedAPI ? "Enhanced API" : "Standard API"}</span>
             {anyErrors && <span className="text-orange-600 dark:text-orange-400">Some models returned errors</span>}
             {startedAt && (
               <span>

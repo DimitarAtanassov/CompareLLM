@@ -38,10 +38,10 @@ class EnhancedChatService:
         )
         
         tasks = [self._process_single_model(model_name, messages, request) 
-                for model_name in chosen_models]
+                 for model_name in chosen_models]
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        answers = {}
+        answers: Dict[str, ModelAnswer] = {}
         for model, result in zip(chosen_models, results):
             if isinstance(result, Exception):
                 log_event("model.error", model=model, error=str(result))
@@ -78,23 +78,18 @@ class EnhancedChatService:
     ) -> str:
         """Process chat completion for a single model with enhanced parameters."""
         provider, model = self.registry.model_map[model_name]
-        
-        # Get base parameters
-        temperature = request.temperature or 0.7
-        max_tokens = request.max_tokens or 8192
-        min_tokens = request.min_tokens
-        
-        # Get provider-specific parameters
-        provider_params = request.get_provider_params(provider.type, model_name)
-        
-        # Override base parameters with provider-specific ones if present
-        if "temperature" in provider_params:
-            temperature = provider_params["temperature"]
-        if "max_tokens" in provider_params:
-            max_tokens = provider_params["max_tokens"]
-        if "min_tokens" in provider_params:
-            min_tokens = provider_params["min_tokens"]
-        
+
+        # ---------- EFFECTIVE PARAMS (global → per-model override) ----------
+        # Pull per-model overrides (temperature/max_tokens/min_tokens)
+        mp: Dict[str, Any] = (request.model_params or {}).get(model_name, {}) or {}
+
+        temperature: Optional[float] = mp.get("temperature", request.temperature)
+        max_tokens: Optional[int]   = mp.get("max_tokens",  request.max_tokens)
+        min_tokens: Optional[int]   = mp.get("min_tokens",  request.min_tokens)
+
+        # Provider-specific parameter bundle (does NOT include temp/max/min)
+        provider_params = request.get_provider_params(provider.type, model_name) or {}
+
         # Log the conversation context and parameters
         log_context = {
             "message_count": len(messages),
@@ -118,7 +113,8 @@ class EnhancedChatService:
         start_time = time.perf_counter()
         
         try:
-            # Use enhanced chat adapter with provider parameters
+            # Use enhanced chat adapter with provider parameters.
+            # The adapter is already designed to OMIT None values (so providers use their own defaults).
             result = await self.chat_adapter.chat_completion(
                 provider=provider,
                 model=model,
@@ -249,31 +245,37 @@ class EnhancedChatService:
         }
         
         provider_type = capabilities["provider_type"]
+
+        # Effective max_tokens (global → per-model)
+        mp: Dict[str, Any] = (request.model_params or {}).get(model_name, {}) or {}
+        effective_max_tokens: Optional[int] = mp.get("max_tokens", request.max_tokens)
         
         # Check Anthropic-specific validations
         if provider_type == "anthropic" and request.anthropic_params:
-            if (request.anthropic_params.thinking_enabled and 
-                not capabilities.get("supports_thinking", False)):
+            thinking_enabled = getattr(request.anthropic_params, "thinking_enabled", None)
+            thinking_budget  = getattr(request.anthropic_params, "thinking_budget_tokens", None)
+
+            if thinking_enabled and not capabilities.get("supports_thinking", False):
                 validation_result["warnings"].append(
                     f"Model {model_name} may not support extended thinking"
                 )
             
-            if (request.anthropic_params.thinking_budget_tokens and 
-                request.anthropic_params.thinking_budget_tokens > request.max_tokens):
-                validation_result["errors"].append(
-                    "Thinking budget tokens cannot exceed max_tokens"
-                )
-                validation_result["valid"] = False
+            if thinking_budget is not None and effective_max_tokens is not None:
+                if thinking_budget > effective_max_tokens:
+                    validation_result["errors"].append(
+                        "Thinking budget tokens cannot exceed max_tokens"
+                    )
+                    validation_result["valid"] = False
         
-        # Check token limits
+        # Check token limits (guard None)
         max_context = capabilities.get("max_context_tokens")
-        if max_context and request.max_tokens > max_context:
+        if max_context and (effective_max_tokens is not None) and (effective_max_tokens > max_context):
             validation_result["warnings"].append(
-                f"Requested max_tokens ({request.max_tokens}) exceeds model context limit ({max_context})"
+                f"Requested max_tokens ({effective_max_tokens}) exceeds model context limit ({max_context})"
             )
         
         # Check provider parameter compatibility
-        provider_params = request.get_provider_params(provider_type, model_name)
+        provider_params = request.get_provider_params(provider_type, model_name) or {}
         if provider_params:
             # Validate provider-specific parameter compatibility
             if provider_type == "anthropic":
