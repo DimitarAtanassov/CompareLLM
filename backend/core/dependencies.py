@@ -4,9 +4,9 @@ from fastapi import Depends
 
 from config.settings import Settings, get_settings
 from providers.registry import ModelRegistry
-from providers.adapters.chat_adapter import ChatAdapter
+from providers.adapters.DEPRECATED_chat_adapter import ChatAdapter
 from providers.adapters.embedding_adapter import EmbeddingAdapter
-from services.chat_service import ChatService
+from services.DEPRECATED_chat_service import ChatService
 from services.embedding_service import EmbeddingService
 from services.dataset_service import DatasetService
 from services.search_services import SearchService

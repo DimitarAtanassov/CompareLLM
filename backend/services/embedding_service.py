@@ -3,7 +3,7 @@ from typing import List
 
 from config.logging import log_event
 from core.exceptions import ModelNotFoundError, ProviderError
-from models.requests import EmbeddingRequest
+from models.DEPRECATED_requests import EmbeddingRequest
 from models.responses import EmbeddingResponse, EmbeddingUsage  # ADD THIS IMPORT
 from providers.registry import ModelRegistry
 from providers.adapters.embedding_adapter import EmbeddingAdapter

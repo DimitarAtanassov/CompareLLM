@@ -4,10 +4,10 @@ from pydantic import BaseModel, Field
 import asyncio
 import json
 
-from models.requests import ChatRequest, ChatMessage
-from services.chat_service import ChatService
+from models.DEPRECATED_requests import ChatRequest, ChatMessage
+from services.DEPRECATED_chat_service import ChatService
 from providers.registry import ModelRegistry
-from providers.adapters.chat_adapter import ChatAdapter
+from providers.adapters.DEPRECATED_chat_adapter import ChatAdapter
 from core.exceptions import AskManyLLMsException
 
 router = APIRouter(prefix="/v1", tags=["OpenAI Compatible"])

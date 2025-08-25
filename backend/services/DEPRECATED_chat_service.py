@@ -4,10 +4,10 @@ from typing import Any, Dict, List, Optional
 
 from config.logging import log_event
 from core.exceptions import ModelNotFoundError, ProviderError
-from models.requests import ChatRequest
+from models.DEPRECATED_requests import ChatRequest
 from models.responses import ChatResponse, ModelAnswer
 from providers.registry import ModelRegistry
-from providers.adapters.chat_adapter import ChatAdapter
+from providers.adapters.DEPRECATED_chat_adapter import ChatAdapter
 
 
 class ChatService:

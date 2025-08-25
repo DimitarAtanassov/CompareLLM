@@ -4,16 +4,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
-import asyncio
 import time
-import json
-
 from config.logging import setup_logging, log_event
 from config.settings import get_settings
 from core.exceptions import AskManyLLMsException, ProviderError, ModelNotFoundError
-from models.requests import ChatRequest, ChatMessage as RequestChatMessage
+from models.enhanced_requests import EnhancedChatRequest, ChatMessage
 from models.responses import ChatResponse, ModelAnswer
 from providers.registry import ModelRegistry
 from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
@@ -285,13 +280,13 @@ def create_app() -> FastAPI:
                 # Convert to internal format
                 chat_messages = []
                 for msg in messages:
-                    chat_messages.append(RequestChatMessage(
+                    chat_messages.append(ChatMessage(
                         role=msg.get("role", "user"),
                         content=msg.get("content", "")
                     ))
                 
                 # Create request
-                chat_request = ChatRequest(
+                chat_request = EnhancedChatRequest(
                     messages=chat_messages,
                     models=[model],
                     temperature=body.get("temperature"),
@@ -331,7 +326,7 @@ def create_app() -> FastAPI:
                     prompt = body["prompt"]
                     models = body.get("models", list(registry.model_map.keys()))
                     
-                    chat_request = ChatRequest(
+                    chat_request = EnhancedChatRequest(
                         prompt=prompt,
                         models=models,
                         temperature=body.get("temperature"),
@@ -349,12 +344,12 @@ def create_app() -> FastAPI:
                     
                     chat_messages = []
                     for msg in messages:
-                        chat_messages.append(RequestChatMessage(
+                        chat_messages.append(ChatMessage(
                             role=msg.get("role", "user"),
                             content=msg.get("content", "")
                         ))
                     
-                    chat_request = ChatRequest(
+                    chat_request = EnhancedChatRequest(
                         messages=chat_messages,
                         models=models,
                         temperature=body.get("temperature"),
@@ -394,7 +389,7 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=400, detail="Model not specified")
             
             # Create request object
-            from models.requests import EmbeddingRequest
+            from models.DEPRECATED_requests import EmbeddingRequest
             embedding_request = EmbeddingRequest(texts=texts, model=model)
             
             # Generate embeddings
@@ -433,7 +428,7 @@ def create_app() -> FastAPI:
         try:
             body = await request.json()
             
-            from models.requests import DatasetUploadRequest
+            from models.DEPRECATED_requests import DatasetUploadRequest
             upload_request = DatasetUploadRequest(**body)
             
             response = await dataset_service.upload_dataset(upload_request)
@@ -482,7 +477,7 @@ def create_app() -> FastAPI:
         try:
             body = await request.json()
             
-            from models.requests import SearchRequest
+            from models.DEPRECATED_requests import SearchRequest
             search_request = SearchRequest(**body)
             
             response = await search_service.semantic_search(search_request)
