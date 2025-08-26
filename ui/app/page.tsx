@@ -126,23 +126,26 @@ type MultiSearchResponse = {
    ========================================================================== */
 const BRAND_TO_DEFAULT_WIRE: Partial<Record<ProviderBrand, ProviderWire>> = {
   deepseek: "openai",   // DeepSeek speaks OpenAI wire
-  // add more brand→wire defaults here if needed
+  voyage: "openai"   // ← new
 };
-   type ProviderBrand =
-  | "anthropic"
-  | "openai"
-  | "gemini"
-  | "ollama"
-  | "deepseek"
-  | "unknown";
+type ProviderBrand =
+    | "anthropic"
+    | "openai"
+    | "gemini"
+    | "ollama"
+    | "deepseek"
+    | "voyage"   // ← new
+    | "unknown";
 
 type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "unknown";
 
 const isProviderWire = (x?: string | null): x is ProviderWire =>
   x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "unknown";
 
+
 const isProviderBrand = (x?: string | null): x is ProviderBrand =>
-  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "deepseek" || x === "unknown";
+  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" ||
+  x === "deepseek" || x === "voyage" || x === "unknown";
 
 const coerceWire = (p: ProviderInfo): ProviderWire => {
   if (isProviderWire(p.wire)) return p.wire;           // backend explicit wire wins
@@ -154,7 +157,9 @@ const coerceWire = (p: ProviderInfo): ProviderWire => {
 };
 
 const coerceBrand = (t?: string): ProviderBrand => {
-  if (isProviderBrand(t)) return t;
+  const s = (t || "").toLowerCase();
+  if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
+  if (s.includes("voyage")) return "voyage"; // ← new
   return "unknown";
 };
 
@@ -165,6 +170,7 @@ const PROVIDER_TEXT_COLOR: Record<ProviderBrand, string> = {
   gemini: "text-green-600 dark:text-green-400",
   ollama: "text-purple-600 dark:text-purple-400",
   deepseek: "text-sky-600 dark:text-sky-400",
+  voyage: "text-cyan-600 dark:text-cyan-400",    // ← new
   unknown: "text-zinc-600 dark:text-zinc-400",
 };
 
@@ -174,6 +180,7 @@ const PROVIDER_BADGE_BG: Record<ProviderBrand, string> = {
   gemini: "bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400",
   ollama: "bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-400",
   deepseek: "bg-sky-100 dark:bg-sky-900/30 text-sky-700 dark:text-sky-400",
+  voyage: "bg-cyan-100 dark:bg-cyan-900/30 text-cyan-700 dark:text-cyan-400", // ← new
   unknown: "bg-zinc-100 dark:bg-zinc-800 text-zinc-700 dark:text-zinc-400",
 };
 function Spinner({ className = "h-4 w-4" }: { className?: string }) {

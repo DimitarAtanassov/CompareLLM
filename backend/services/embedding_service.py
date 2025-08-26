@@ -1,3 +1,4 @@
+# app/backend/services/embedding_service.py
 import time
 from typing import List
 

@@ -1,3 +1,4 @@
+# backend/adapters/enhanced_chat_adapter.py
 import asyncio
 from typing import Any, AsyncIterator, Dict, List, Optional
 import httpx

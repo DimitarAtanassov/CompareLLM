@@ -1,12 +1,13 @@
+# app/backend/core/dependencies.py
 from functools import lru_cache
 
 from fastapi import Depends
 
 from config.settings import Settings, get_settings
 from providers.registry import ModelRegistry
-from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
+from providers.adapters.enhanced_chat_adapter import ChatAdapter, EnhancedChatAdapter
 from providers.adapters.embedding_adapter import EmbeddingAdapter
-from services.enhanced_chat_service import EnhancedChatService
+from services.enhanced_chat_service import ChatService, EnhancedChatService
 from services.embedding_service import EmbeddingService
 from services.dataset_service import DatasetService
 from services.search_services import SearchService
@@ -41,8 +42,8 @@ def get_storage_backend() -> MemoryStorageBackend:
 
 def get_chat_service(
     registry: ModelRegistry = Depends(get_model_registry),
-    chat_adapter: ChatAdapter = Depends(get_chat_adapter)
-) -> ChatService:
+    chat_adapter: EnhancedChatAdapter = Depends(get_chat_adapter)
+) -> EnhancedChatService:
     """Get chat service with dependencies."""
     return EnhancedChatService(registry, chat_adapter)
 

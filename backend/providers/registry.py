@@ -1,4 +1,5 @@
-# registry.py (or wherever ModelRegistry lives)
+#app/backend/providers/registry.py
+
 
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple

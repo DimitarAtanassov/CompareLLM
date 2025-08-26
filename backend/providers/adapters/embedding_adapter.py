@@ -1,3 +1,4 @@
+#app/backend/providers/adapters/embedding_adapter.py
 from typing import List
 import httpx
 
