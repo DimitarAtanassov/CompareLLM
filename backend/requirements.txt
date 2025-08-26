@@ -5,3 +5,4 @@ pydantic
 pyyaml
 numpy
 pydantic_settings
+python-multipart

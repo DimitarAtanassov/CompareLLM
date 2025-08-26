@@ -164,7 +164,7 @@ async def self_dataset_compare(
             chosen_base = sorted(common)[0]
 
     # Perform search per model
-    out: Dict[str, MultiBucket] = {{}}
+    out: Dict[str, MultiBucket] = {}
     for model in payload.embedding_models:
         bucket = MultiBucket(items=[])
         try:
@@ -208,14 +208,15 @@ async def get_provider_features(request: Request):
     reg = getattr(request.app.state, "registry", None)
     if not reg:
         raise HTTPException(status_code=500, detail="Model registry not initialized")
-    features: Dict[str, Any] = {{}}
+    features: Dict[str, Any] = {}
     for pname, provider in reg.providers.items():
-        pf = {{
+        pf = {
             "type": provider.type,
             "models": provider.models,
             "embedding_models": provider.embedding_models,
-            "features": {{}}
-        }}
+            "features": {}
+        }
+
         if provider.type == "anthropic":
             pf["features"] = {{
                 "thinking": True, "tools": True, "streaming": True, "system_messages": True,

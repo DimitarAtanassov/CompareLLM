@@ -583,6 +583,8 @@ export default function Page() {
   const [globalTemp, setGlobalTemp] = useState<number | undefined>(undefined);
   const [globalMax, setGlobalMax] = useState<number | undefined>(undefined);
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
+  const [topKSingle, setTopKSingle] = useState<number>(5);
+const [topKCompare, setTopKCompare] = useState<number>(5);
   const useEnhancedAPI = true;
 
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
@@ -924,14 +926,14 @@ export default function Page() {
     setIsSearchingSingle(true);
     const myId = ++requestIdRef.current;
     try {
-      const res = await fetch(`${API_BASE}/search`, {
+      const res = await fetch(`${API_BASE}/search/semantic`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           query: snapshot.query,
           embedding_model: snapshot.model,
           dataset_id: snapshot.dataset,
-          top_k: 5,
+          top_k: topKSingle || 5,
         }),
       });
       if (!res.ok) throw new Error(await res.text());
@@ -950,7 +952,7 @@ export default function Page() {
     } finally {
       if (myId === requestIdRef.current) setIsSearchingSingle(false);
     }
-  }, [searchQuery, selectedDataset, selectedSearchModel]);
+  }, [searchQuery, selectedDataset, selectedSearchModel, topKSingle]);
 
 
   const performMultiSearch = useCallback(async () => {
@@ -974,7 +976,7 @@ export default function Page() {
         body: JSON.stringify({
           query: compareQuery,
           embedding_models: selectedEmbeddingModels,
-          top_k: 5,
+          top_k: topKCompare || 5,
         }),
       });
 
@@ -995,7 +997,7 @@ export default function Page() {
     } finally {
       if (myId === requestIdRef.current) setIsComparing(false);
     }
-  }, [compareQuery, selectedEmbeddingModels]);
+  }, [compareQuery, selectedEmbeddingModels, topKCompare]);
 
 
 
@@ -1766,6 +1768,18 @@ export default function Page() {
                       className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
                       value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
               </div>
+              <div>
+              <label className="block text-xs font-medium mb-1">Top-K</label>
+              <input
+                type="number"
+                min={1}
+                max={50}
+                value={topKSingle}
+                onChange={(e) => setTopKSingle(Math.max(1, Math.min(50, Number(e.target.value) || 5)))}
+                className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
+                placeholder="5"
+              />
+            </div>
               <button
                 onClick={() => void performSearch()}
                 disabled={
@@ -1808,6 +1822,18 @@ export default function Page() {
               <input type="text" placeholder="Comparison query"
                     className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
                     value={compareQuery} onChange={(e) => setCompareQuery(e.target.value)} />
+              <div>
+                <label className="block text-xs font-medium mb-1">Top-K</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={topKCompare}
+                  onChange={(e) => setTopKCompare(Math.max(1, Math.min(50, Number(e.target.value) || 5)))}
+                  className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
+                  placeholder="5"
+                />
+            </div>
               <button
                 onClick={() => void performMultiSearch()}
                 disabled={
