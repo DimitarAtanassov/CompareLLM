@@ -30,7 +30,8 @@ providers:
 
   # DeepSeek Models
   deepseek:
-    type: openai  # DeepSeek uses OpenAI-compatible API
+    type: deepseek
+    wire: openai
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     headers: {}
@@ -65,10 +66,10 @@ providers:
     api_key_env: GEMINI_API_KEY
     headers: {}
     models:
-      - gemini-pro
-      - gemini-pro-vision
-      - gemini-1.5-pro
       - gemini-1.5-flash
+      - gemini-1.5-pro
+      - gemini-1.5-flash-latest
+      - gemini-1.5-pro-latest
     embedding_models:
       - embedding-001
 

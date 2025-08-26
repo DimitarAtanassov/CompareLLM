@@ -1,14 +1,23 @@
 import asyncio
+import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+from fastapi import Request
 
 from config.logging import log_event
 from core.exceptions import ModelNotFoundError, ProviderError
 from models.enhanced_requests import EnhancedChatRequest
 from models.responses import ChatResponse, ModelAnswer
-from providers.registry import ModelRegistry
+from providers.registry import ModelRegistry, get_provider_for_model
 from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 
+def _get_wire(provider) -> str:
+    wire = getattr(provider, "wire", None)
+    if wire:
+        return str(wire).lower()
+    ptype = getattr(provider, "type", None)
+    return str(ptype or "").lower()
 
 class EnhancedChatService:
     """Enhanced service for handling chat completions with provider-specific parameters."""
@@ -70,86 +79,89 @@ class EnhancedChatService:
         user_messages = [msg["content"] for msg in messages if msg["role"] == "user"]
         return user_messages[-1] if user_messages else "No user message found"
     
+
+        # ---------- Decide streaming vs non-stream ----------
+    def is_openai_stream_model(m: str) -> bool:
+        """
+        Return True if model is an OpenAI GPT-family or O-preview variant
+        that should always use streaming.
+        Matches: gpt-3.5, gpt-4, gpt-4o, gpt-5, gpt-5o, o1-preview, o1-mini, o2-*
+        """
+        ml = m.lower()
+        return bool(re.match(r"^(gpt-|o\d+)", ml))
+
+
     async def _process_single_model(
-        self, 
-        model_name: str, 
-        messages: List[Dict[str, str]], 
+        self,
+        model_name: str,
+        messages: List[Dict[str, str]],
         request: EnhancedChatRequest
     ) -> str:
-        """Process chat completion for a single model with enhanced parameters."""
         provider, model = self.registry.model_map[model_name]
 
-        # ---------- EFFECTIVE PARAMS (global → per-model override) ----------
-        # Pull per-model overrides (temperature/max_tokens/min_tokens)
-        mp: Dict[str, Any] = (request.model_params or {}).get(model_name, {}) or {}
+        mp = (request.model_params or {}).get(model_name, {}) or {}
+        temperature = mp.get("temperature", request.temperature)
+        max_tokens = mp.get("max_tokens", request.max_tokens)
+        min_tokens = mp.get("min_tokens", request.min_tokens)
 
-        temperature: Optional[float] = mp.get("temperature", request.temperature)
-        max_tokens: Optional[int]   = mp.get("max_tokens",  request.max_tokens)
-        min_tokens: Optional[int]   = mp.get("min_tokens",  request.min_tokens)
+        wire = _get_wire(provider)
 
-        # Provider-specific parameter bundle (does NOT include temp/max/min)
-        provider_params = request.get_provider_params(provider.type, model_name) or {}
+        # Build provider_params exactly once
+        provider_params: Dict[str, Any] = {}
+        if wire == "openai" and getattr(request, "openai_params", None):
+            provider_params["openai_params"] = request.openai_params
+        elif wire == "anthropic" and getattr(request, "anthropic_params", None):
+            provider_params.update(request.anthropic_params)
+        elif wire == "gemini" and getattr(request, "gemini_params", None):
+            provider_params.update(request.gemini_params)
+        elif wire == "ollama" and getattr(request, "ollama_params", None):
+            provider_params.update(request.ollama_params)
 
-        # Log the conversation context and parameters
-        log_context = {
-            "message_count": len(messages),
-            "first_message": messages[0]["content"][:50] + "..." if messages else None,
-            "last_message": messages[-1]["content"][:50] + "..." if messages else None,
-            "provider_type": provider.type,
-            "provider_params_count": len(provider_params),
-            "provider_params_keys": list(provider_params.keys()) if provider_params else []
-        }
-        
-        log_event(
-            "enhanced_chat.model_start",
-            provider=provider.name,
-            model=model_name,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            min_tokens=min_tokens,
-            context=log_context,
-        )
-        
         start_time = time.perf_counter()
-        
         try:
-            # Use enhanced chat adapter with provider parameters.
-            # The adapter is already designed to OMIT None values (so providers use their own defaults).
-            result = await self.chat_adapter.chat_completion(
-                provider=provider,
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                min_tokens=min_tokens,
-                provider_params=provider_params
-            )
-            
+            # Decide: stream via adapter.stream_chat, else adapter.chat_completion
+            if wire == "openai" and self.is_openai_stream_model(model_name):
+                chunks: List[str] = []
+                async for delta in self.chat_adapter.stream_chat(
+                    provider=provider,
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    min_tokens=min_tokens,
+                    provider_params=provider_params,
+                    timeout_s=180,
+                ):
+                    chunks.append(delta)
+                result = "".join(chunks)
+            else:
+                result = await self.chat_adapter.chat_completion(
+                    provider=provider,
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    min_tokens=min_tokens,
+                    provider_params=provider_params,
+                    timeout_s=180,
+                )
+
             duration_ms = int((time.perf_counter() - start_time) * 1000)
-            log_event(
-                "enhanced_chat.model_end",
-                provider=provider.name,
-                model=model_name,
-                ok=True,
-                duration_ms=duration_ms,
-                answer_chars=len(result or ""),
-                context=log_context,
-            )
-            
+            log_event("enhanced_chat.model_end",
+                    provider=provider.name, model=model_name,
+                    ok=True, duration_ms=duration_ms,
+                    answer_chars=len(result or ""))
             return result
-            
+
         except Exception as e:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
-            log_event(
-                "enhanced_chat.model_end",
-                provider=provider.name,
-                model=model_name,
-                ok=False,
-                duration_ms=duration_ms,
-                error=str(e),
-                context=log_context,
-            )
+            log_event("enhanced_chat.model_end",
+                    provider=provider.name, model=model_name,
+                    ok=False, duration_ms=duration_ms, error=str(e))
             raise ProviderError(provider.name, str(e))
+            
+
+
     
     def _validate_models(self, models: List[str]) -> None:
         """Validate that all requested models are available."""
@@ -245,13 +257,14 @@ class EnhancedChatService:
         }
         
         provider_type = capabilities["provider_type"]
+        provider_wire = _get_wire(self.registry.model_map[model_name][0])
 
         # Effective max_tokens (global → per-model)
         mp: Dict[str, Any] = (request.model_params or {}).get(model_name, {}) or {}
         effective_max_tokens: Optional[int] = mp.get("max_tokens", request.max_tokens)
         
-        # Check Anthropic-specific validations
-        if provider_type == "anthropic" and request.anthropic_params:
+        # Check Anthropic-specific validations (by wire)
+        if provider_wire == "anthropic" and request.anthropic_params:
             thinking_enabled = getattr(request.anthropic_params, "thinking_enabled", None)
             thinking_budget  = getattr(request.anthropic_params, "thinking_budget_tokens", None)
 
@@ -259,13 +272,14 @@ class EnhancedChatService:
                 validation_result["warnings"].append(
                     f"Model {model_name} may not support extended thinking"
                 )
-            
+
             if thinking_budget is not None and effective_max_tokens is not None:
                 if thinking_budget > effective_max_tokens:
                     validation_result["errors"].append(
                         "Thinking budget tokens cannot exceed max_tokens"
                     )
                     validation_result["valid"] = False
+
         
         # Check token limits (guard None)
         max_context = capabilities.get("max_context_tokens")
@@ -275,13 +289,24 @@ class EnhancedChatService:
             )
         
         # Check provider parameter compatibility
-        provider_params = request.get_provider_params(provider_type, model_name) or {}
-        if provider_params:
-            # Validate provider-specific parameter compatibility
-            if provider_type == "anthropic":
-                self._validate_anthropic_params(provider_params, validation_result)
-            elif provider_type == "openai":
-                self._validate_openai_params(provider_params, validation_result)
+        if provider_wire == "openai" and getattr(request, "openai_params", None):
+            openai_params_dict = (
+                vars(request.openai_params)
+                if hasattr(request.openai_params, "__dict__")
+                else request.openai_params
+            )
+            self._validate_openai_params(openai_params_dict or {}, validation_result)
+
+        elif provider_wire == "anthropic" and getattr(request, "anthropic_params", None):
+            # Convert to dict if it's a pydantic model
+            anth_params = (
+                request.anthropic_params.model_dump(exclude_none=True)
+                if hasattr(request.anthropic_params, "model_dump")
+                else (vars(request.anthropic_params)
+                    if hasattr(request.anthropic_params, "__dict__")
+                    else request.anthropic_params)
+            )
+            self._validate_anthropic_params(anth_params or {}, validation_result)
         
         return validation_result
     
@@ -316,6 +341,120 @@ class EnhancedChatService:
             if not (-2 <= penalty <= 2):
                 result["errors"].append("presence_penalty must be between -2 and 2")
                 result["valid"] = False
+    
+    async def stream_answers(self, req: EnhancedChatRequest) -> AsyncIterator[Dict[str, Any]]:
+        """
+        Yields {"model": str, "delta": str, "latency_ms": int}
+        """
+        # Normalize request to messages/models just like non-streaming path
+        messages = req.to_messages() if hasattr(req, "to_messages") else (req.messages or [])
+        models = req.models or list(self.registry.model_map.keys())
+
+        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+        done = asyncio.Event()
+
+        async def run_one(model_name: str):
+            # Resolve provider/model from our registry (keeps consistent with non-streaming)
+            try:
+                provider, actual_model = self.registry.model_map[model_name]
+            except KeyError as e:
+                await queue.put({"model": model_name, "delta": f"[error] Unknown model {model_name}", "latency_ms": 0})
+                return
+
+            # Effective temps/tokens (global → per-model override), same logic as chat_completion
+            mp: Dict[str, Any] = (getattr(req, "model_params", {}) or {}).get(model_name, {}) or {}
+            temperature: Optional[float] = mp.get("temperature", getattr(req, "temperature", None))
+            max_tokens: Optional[int]   = mp.get("max_tokens",  getattr(req, "max_tokens", None))
+            min_tokens: Optional[int]   = mp.get("min_tokens",  getattr(req, "min_tokens", None))
+
+            # Provider-specific bundle (anthropic/openai/gemini/ollama)
+            params = self._build_provider_params(model_name, req)
+
+            t0 = time.perf_counter()
+            try:
+                # NOTE: fixed attribute name: self.chat_adapter (not self._adapter)
+                async for delta in self.chat_adapter.stream_chat(
+                    provider=provider,
+                    model=actual_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    min_tokens=min_tokens,
+                    provider_params=params,
+                ):
+                    await queue.put(
+                        {
+                            "model": model_name,
+                            "delta": delta,
+                            "latency_ms": int((time.perf_counter() - t0) * 1000),
+                        }
+                    )
+            except Exception as e:
+                await queue.put({"model": model_name, "delta": f"[error] {e}", "latency_ms": 0})
+
+        async def fan_in(model_list: List[str]):
+            tasks = [asyncio.create_task(run_one(m)) for m in model_list]
+            try:
+                await asyncio.gather(*tasks)
+            finally:
+                done.set()
+
+        asyncio.create_task(fan_in(models))
+
+        while True:
+            try:
+                evt = await asyncio.wait_for(queue.get(), timeout=0.05)
+                yield evt
+            except asyncio.TimeoutError:
+                if done.is_set() and queue.empty():
+                    break
+                continue
+
+
+    # mirror your non-streaming merge logic here
+    def _build_provider_params(self, model: str, req: EnhancedChatRequest) -> Dict[str, Any]:
+        """
+        Merge per-model overrides with group params (anthropic/openai/gemini/ollama)
+        exactly like your existing non-streaming path.
+        """
+        merged: Dict[str, Any] = {}
+
+        # Per-model overrides (temperature/max/min are passed separately, so ignore them here)
+        if getattr(req, "model_params", None) and model in req.model_params:
+            for k, v in (req.model_params[model] or {}).items():
+                if v is not None and k not in ("temperature", "max_tokens", "min_tokens"):
+                    merged[k] = v
+
+        # Group params: copy only if present
+        if req.anthropic_params:
+            merged.update({k: v for k, v in req.anthropic_params.items() if v is not None})
+        if req.openai_params:
+            merged.update({"openai_params": {k: v for k, v in req.openai_params.items() if v is not None}})
+        if req.gemini_params:
+            merged.update({k: v for k, v in req.gemini_params.items() if v is not None})
+        if req.ollama_params:
+            merged.update({k: v for k, v in req.ollama_params.items() if v is not None})
+
+        return merged
+
+
+# Wire-up function used by FastAPI Depends(...)
+def get_enhanced_chat_service(request: Request) -> EnhancedChatService:
+    """
+    Return the singleton EnhancedChatService that was created at app startup:
+      app.state.registry        = ModelRegistry(...)
+      app.state.chat_adapter    = EnhancedChatAdapter()
+      app.state.services["chat"]= EnhancedChatService(registry, chat_adapter)
+    """
+    try:
+        return request.app.state.services["chat"]
+    except Exception as e:
+        # Helpful error if startup didn't set it up
+        raise RuntimeError(
+            "EnhancedChatService singleton not initialized. "
+            "Ensure main.py sets app.state.registry, app.state.chat_adapter, "
+            "and app.state.services['chat'] in an @app.on_event('startup') hook."
+        ) from e
 
 
 # --- Backward compatibility alias (safe removal after full migration) ---

@@ -1,13 +1,14 @@
 import time
 from fastapi import APIRouter, HTTPException, Depends, Request
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import asyncio
 import json
 
 from models.enhanced_requests import EnhancedChatRequest, EnhancedOpenAIChatRequest, AnthropicProviderParams
 from models.responses import ChatResponse, ModelAnswer
-from services.enhanced_chat_service import EnhancedChatService
+from services.enhanced_chat_service import EnhancedChatService, get_enhanced_chat_service
 from providers.registry import ModelRegistry
 from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 from core.exceptions import AskManyLLMsException
@@ -380,6 +381,43 @@ def setup_enhanced_chat_routes(chat_service: EnhancedChatService, registry: Mode
             }
         )
 
+    @router.post("/chat/completions/enhanced/ndjson")
+    async def enhanced_chat_stream(
+        req: EnhancedChatRequest,
+        svc: EnhancedChatService = Depends(get_enhanced_chat_service),
+    ):
+        async def gen() -> AsyncIterator[bytes]:
+            # meta
+            yield (json.dumps({"type": "meta", "models": req.models}) + "\n").encode("utf-8")
+
+            # stream deltas as they arrive (across all models)
+            async for evt in svc.stream_answers(req):
+                # evt should be: {"model": "...", "delta": "...", "latency_ms": 123}
+                yield (
+                    json.dumps(
+                        {
+                            "type": "chunk",
+                            "model": evt["model"],
+                            "answer": evt.get("delta", ""),
+                            "latency_ms": evt.get("latency_ms", 0),
+                        }
+                    )
+                    + "\n"
+                ).encode("utf-8")
+
+            # done
+            yield (json.dumps({"type": "done"}) + "\n").encode("utf-8")
+
+        # NDJSON response
+        return StreamingResponse(
+            gen(),
+            media_type="application/x-ndjson",
+            headers={
+                # helpful to keep some proxies happy
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # disable nginx buffering if present
+            },
+        )
     # ---------- Anthropic-optimized endpoint ----------
     @router.post("/chat/anthropic", response_model=ChatResponse)
     async def anthropic_optimized_chat(
