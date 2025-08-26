@@ -527,14 +527,14 @@ function ProviderParameterEditor({
    ========================================================================== */
 export default function Page() {
   const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
-
+  const [embedView, setEmbedView] = useState<"single" | "compare">("single");
   // Providers and models
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
   const [allEmbeddingModels, setAllEmbeddingModels] = useState<string[]>([]);
 
-  // Chat
+  // Chat 
   const [selected, setSelected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
@@ -1891,197 +1891,240 @@ const [topKCompare, setTopKCompare] = useState<number>(5);
           </section>
 
 
-
-
-          {/* Right: search */}
+          {/* Right: Results (toggle between Single / Compare) */}
           <section className="space-y-4">
-          {(isSearchingSingle || isComparing) && (
-            <div className="rounded-xl border border-orange-200 dark:border-orange-900/40 p-3 bg-orange-50/40 dark:bg-orange-900/10">
-              <div className="flex items-center gap-2 text-sm text-orange-700 dark:text-orange-300 mb-2">
-                <Spinner className="h-4 w-4" />
-                {isSearchingSingle ? "Running similarity search…" : "Running side-by-side comparison…"}
-              </div>
-              <LoadingBar />
+            {/* Toggle control */}
+            <div className="inline-flex rounded-xl border border-zinc-200 dark:border-zinc-800 p-0.5 bg-white dark:bg-zinc-950">
+              <button
+                onClick={() => setEmbedView("single")}
+                className={`px-3 py-1.5 text-sm rounded-lg transition ${
+                  embedView === "single"
+                    ? "bg-orange-600 text-white"
+                    : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                }`}
+              >
+                Single model
+              </button>
+              <button
+                onClick={() => setEmbedView("compare")}
+                className={`px-3 py-1.5 text-sm rounded-lg transition ${
+                  embedView === "compare"
+                    ? "bg-orange-600 text-white"
+                    : "text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-900"
+                }`}
+              >
+                Multi-model comparison
+              </button>
             </div>
-          )}            
-            {/* Single-model search results */}
-            {searchContext && (
-              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-sm">
-                    <span className="font-medium">Results</span>{" "}
-                    <span className="text-zinc-500">for</span>{" "}
-                    <span className="font-mono">{searchContext.query}</span>{" "}
-                    <span className="text-zinc-500">with</span>{" "}
-                    <span className="font-mono">{searchContext.model}</span>
-                  </div>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="text-left">
-                      <tr className="text-zinc-500">
-                        <th className="py-2 pr-2">#</th>
-                        <th className="py-2 pr-2">similarity</th>
-                        <th className="py-2 pr-2">document</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {searchResults.map((row, i) => (
-                        <tr key={i} className="border-t border-zinc-200 dark:border-zinc-800">
-                          <td className="py-2 pr-2 text-zinc-500">{i + 1}</td>
-                          <td className="py-2 pr-2 font-mono">
-                            {(row.similarity_score ?? 0).toFixed(3)}
-                          </td>
-                          <td className="py-2 pr-2">
-                            <pre className="whitespace-pre-wrap text-[13px] leading-snug max-w-[80ch]">
-                              {JSON.stringify(redactResult(row), null, 2)}
-                            </pre>
-                          </td>
-                        </tr>
-                      ))}
-                      {searchResults.length === 0 && (
-                        <tr>
-                          <td colSpan={3} className="py-3 text-zinc-500">
-                            No results yet.
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
 
-            {/* Multi-compare results */}
-            {multiSearchResults && (
+            {/* ── Single-model results (STACKED) ───────────────────────────── */}
+            {embedView === "single" && (
               <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm space-y-4">
-                <div className="text-sm">
-                  <span className="text-zinc-500">Compare query</span>{" "}
-                  <span className="font-mono">{multiSearchResults.query}</span>{" "}
-                  {typeof multiSearchResults.duration_ms === "number" && (
-                    <span className="text-zinc-500"> • {(multiSearchResults.duration_ms / 1000).toFixed(1)}s</span>
-                  )}
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">Single-model results</h3>
+                  {isSearchingSingle && <Spinner />}
                 </div>
+                {isSearchingSingle && <LoadingBar />}
 
-                {(() => {
-                  const entries = Object.entries(multiSearchResults.results);
-                  const modelKeys = entries.map(([k]) => k);
-                  const maxRows = Math.max(
-                    0,
-                    ...entries.map(([, b]) => (b?.items?.length ?? 0))
-                  );
+                {!searchContext && !isSearchingSingle && (
+                  <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                    Run a similarity search to see results here.
+                  </div>
+                )}
 
-                  return (
-                    <div className="overflow-x-auto">
-                      {/* Dynamic column grid: header row + item rows aligned by rank */}
-                      <div
-                        className="grid gap-3"
-                        style={{ gridTemplateColumns: `repeat(${modelKeys.length}, minmax(280px, 1fr))` }}
-                      >
-                        {/* Header cells */}
-                        {modelKeys.map((modelKey) => {
-                          const brand = getProviderType(modelKey);
-                          return (
-                            <div
-                              key={`hdr-${modelKey}`}
-                              className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2 bg-zinc-50 dark:bg-zinc-900/40 flex items-center justify-between"
-                            >
-                              <div className="font-mono text-xs">{modelKey}</div>
-                              <span className={`text-[11px] px-2 py-0.5 rounded ${PROVIDER_BADGE_BG[brand]}`}>
-                                {brand}
+                {searchContext && (
+                  <div className="space-y-3">
+                    {(() => {
+                      const brand = getProviderType(searchContext.model);
+                      const providerBadge = PROVIDER_BADGE_BG[brand];
+                      return (
+                        <div className="flex items-center justify-between">
+                          <div className="text-sm">
+                            <span className="text-zinc-500">Results for</span>{" "}
+                            <span className="font-mono">{searchContext.query}</span>{" "}
+                            <span className="text-zinc-500">on</span>{" "}
+                            <span className="font-mono">{searchContext.dataset}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="font-mono text-xs">{searchContext.model}</div>
+                            <span className={`text-[11px] px-2 py-0.5 rounded ${providerBadge}`}>{brand}</span>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* STACKED list */}
+                    <div className="space-y-3">
+                      {searchResults.length === 0 && !isSearchingSingle && (
+                        <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                          No results yet.
+                        </div>
+                      )}
+
+                      {searchResults.map((row, i) => {
+                        const brand = getProviderType(searchContext.model);
+                        const providerBadge = PROVIDER_BADGE_BG[brand];
+                        const pct = ((row.similarity_score ?? 0) * 100).toFixed(1);
+
+                        const metaLine = Object.entries(row)
+                          .filter(([k]) => !["similarity_score", "embedding"].includes(k) && !k.startsWith("_"))
+                          .slice(0, 3)
+                          .map(([k, v]) => `${k}: ${typeof v === "string" ? v.slice(0, 40) : String(v)}`)
+                          .join(" • ");
+
+                        return (
+                          <div key={i} className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3 bg-white dark:bg-zinc-950">
+                            <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2">
+                              <div className="shrink-0 w-6 h-6 rounded-md bg-zinc-100 dark:bg-zinc-800 text-[11px] flex items-center justify-center text-zinc-700 dark:text-zinc-300">
+                                {i + 1}
+                              </div>
+                              <div className="min-w-0" />
+                              <span
+                                className={`shrink-0 inline-block px-2 py-1 rounded-full text-xs font-medium ${providerBadge}`}
+                                title="cosine similarity"
+                              >
+                                {pct}%
                               </span>
                             </div>
-                          );
-                        })}
 
-                        {/* Rows by rank: i = 0..maxRows-1 */}
-                        {Array.from({ length: maxRows }).map((_, i) =>
-                          modelKeys.map((modelKey) => {
-                            const bucket = multiSearchResults.results[modelKey];
-                            const brand = getProviderType(modelKey);
-                            const providerBadge = PROVIDER_BADGE_BG[brand];
-
-                            // If error, show error card once per column
-                            if (bucket?.error) {
-                              return (
-                                <div
-                                  key={`${modelKey}-err`}
-                                  className="rounded-lg border border-red-200 dark:border-red-900/40 p-3 text-xs text-red-600 dark:text-red-400 bg-red-50/40 dark:bg-red-900/10"
-                                >
-                                  Error: {bucket.error}
-                                </div>
-                              );
-                            }
-
-                            const item = bucket?.items?.[i];
-                            if (!item) {
-                              // Empty cell placeholder for this rank
-                              return (
-                                <div
-                                  key={`${modelKey}-${i}-empty`}
-                                  className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-3 text-xs text-zinc-500 dark:text-zinc-400"
-                                >
-                                  No result for rank {i + 1}.
-                                </div>
-                              );
-                            }
-
-                            return (
-                              <div
-                                key={`${modelKey}-${i}`}
-                                className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3"
-                              >
-                                {/* Top row: rank badge + similarity pill pinned right */}
-                                <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2">
-                                  <div className="shrink-0 w-6 h-6 rounded-md bg-zinc-100 dark:bg-zinc-800 text-[11px] flex items-center justify-center text-zinc-700 dark:text-zinc-300">
-                                    {i + 1}
-                                  </div>
-                                  <div className="min-w-0" />
-                                  <span
-                                    className={`shrink-0 inline-block px-2 py-1 rounded-full text-xs font-medium ${providerBadge}`}
-                                    title="cosine similarity"
-                                  >
-                                    {((item.similarity_score ?? 0) * 100).toFixed(1)}%
-                                  </span>
-                                </div>
-
-                                {/* Content */}
-                                <div className="mt-2 grid grid-cols-[1fr]">
-                                  {/* Prefer readable snippet */}
-                                  <div className="text-[13px] leading-snug">
-                                    {primarySnippet(item, 220)}
-                                  </div>
-                                  {/* Small meta line */}
-                                  <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">
-                                    {Object.entries(item)
-                                      .filter(([k]) => !["similarity_score", "embedding"].includes(k) && !k.startsWith("_"))
-                                      .slice(0, 3)
-                                      .map(([k, v]) => `${k}: ${typeof v === "string" ? v.slice(0, 40) : String(v)}`)
-                                      .join(" • ")}
-                                  </div>
-
-                                  {/* Expandable JSON if you want (optional): 
-                                  <details className="mt-2">
-                                    <summary className="text-[11px] cursor-pointer text-zinc-500 dark:text-zinc-400">raw</summary>
-                                    <pre className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-snug max-w-[80ch]">
-                                      {JSON.stringify(redactResult(item), null, 2)}
-                                    </pre>
-                                  </details>
-                                  */}
-                                </div>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
+                            <div className="mt-2">
+                              <div className="text-[13px] leading-snug">{primarySnippet(row, 220)}</div>
+                              {metaLine && (
+                                <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">{metaLine}</div>
+                              )}
+                              <details className="mt-2">
+                                <summary className="text-[11px] cursor-pointer text-zinc-500 dark:text-zinc-400">raw</summary>
+                                <pre className="mt-1 whitespace-pre-wrap break-words text-[12px] leading-snug max-w-[80ch]">
+                                  {JSON.stringify(redactResult(row), null, 2)}
+                                </pre>
+                              </details>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })()}
+                  </div>
+                )}
               </div>
             )}
 
+            {/* ── Multi-model comparison (SIDE-BY-SIDE columns) ────────────── */}
+            {embedView === "compare" && (
+              <div className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">Multi-model comparison</h3>
+                  {isComparing && <Spinner />}
+                </div>
+                {isComparing && <LoadingBar />}
 
+                {!multiSearchResults && !isComparing && (
+                  <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
+                    Run a comparison to see side-by-side results here.
+                  </div>
+                )}
+
+                {multiSearchResults && (
+                  <div className="space-y-4">
+                    <div className="text-sm">
+                      <span className="text-zinc-500">Compare query</span>{" "}
+                      <span className="font-mono">{multiSearchResults.query}</span>{" "}
+                      {typeof multiSearchResults.duration_ms === "number" && (
+                        <span className="text-zinc-500"> • {(multiSearchResults.duration_ms / 1000).toFixed(1)}s</span>
+                      )}
+                    </div>
+
+                    {(() => {
+                      const entries = Object.entries(multiSearchResults.results);
+                      const modelKeys = entries.map(([k]) => k);
+                      const maxRows = Math.max(0, ...entries.map(([, b]) => (b?.items?.length ?? 0)));
+                      return (
+                        <div className="overflow-x-auto">
+                          <div
+                            className="grid gap-3"
+                            style={{ gridTemplateColumns: `repeat(${modelKeys.length}, minmax(260px, 1fr))` }}
+                          >
+                            {modelKeys.map((modelKey) => {
+                              const brand = getProviderType(modelKey);
+                              return (
+                                <div
+                                  key={`hdr-${modelKey}`}
+                                  className="rounded-lg border border-zinc-200 dark:border-zinc-800 px-3 py-2 bg-zinc-50 dark:bg-zinc-900/40 flex items-center justify-between"
+                                >
+                                  <div className="font-mono text-xs truncate">{modelKey}</div>
+                                  <span className={`text-[11px] px-2 py-0.5 rounded ${PROVIDER_BADGE_BG[brand]}`}>{brand}</span>
+                                </div>
+                              );
+                            })}
+
+                            {Array.from({ length: maxRows }).map((_, i) =>
+                              modelKeys.map((modelKey) => {
+                                const bucket = multiSearchResults.results[modelKey];
+                                const brand = getProviderType(modelKey);
+                                const providerBadge = PROVIDER_BADGE_BG[brand];
+
+                                if (bucket?.error) {
+                                  return (
+                                    <div
+                                      key={`${modelKey}-err`}
+                                      className="rounded-lg border border-red-200 dark:border-red-900/40 p-3 text-xs text-red-600 dark:text-red-400 bg-red-50/40 dark:bg-red-900/10"
+                                    >
+                                      Error: {bucket.error}
+                                    </div>
+                                  );
+                                }
+
+                                const item = bucket?.items?.[i];
+                                if (!item) {
+                                  return (
+                                    <div
+                                      key={`${modelKey}-${i}-empty`}
+                                      className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-3 text-xs text-zinc-500 dark:text-zinc-400"
+                                    >
+                                      No result for rank {i + 1}.
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <div key={`${modelKey}-${i}`} className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3">
+                                    <div className="grid grid-cols-[auto_1fr_auto] items-start gap-2">
+                                      <div className="shrink-0 w-6 h-6 rounded-md bg-zinc-100 dark:bg-zinc-800 text-[11px] flex items-center justify-center text-zinc-700 dark:text-zinc-300">
+                                        {i + 1}
+                                      </div>
+                                      <div className="min-w-0" />
+                                      <span
+                                        className={`shrink-0 inline-block px-2 py-1 rounded-full text-xs font-medium ${providerBadge}`}
+                                        title="cosine similarity"
+                                      >
+                                        {((item.similarity_score ?? 0) * 100).toFixed(1)}%
+                                      </span>
+                                    </div>
+
+                                    <div className="mt-2">
+                                      <div className="text-[13px] leading-snug">{primarySnippet(item, 220)}</div>
+                                      <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">
+                                        {Object.entries(item)
+                                          .filter(([k]) => !["similarity_score", "embedding"].includes(k) && !k.startsWith("_"))
+                                          .slice(0, 3)
+                                          .map(([k, v]) => `${k}: ${typeof v === "string" ? v.slice(0, 40) : String(v)}`)
+                                          .join(" • ")}
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
           </section>
+
+
         </main>
       )}
     </div>
