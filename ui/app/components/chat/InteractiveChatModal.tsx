@@ -3,6 +3,8 @@
 import { ChatMessage } from "@/app/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+// top of file
+import CodeBlock from "../md/CodeBlock";
 
 
 export default function InteractiveChatModal({

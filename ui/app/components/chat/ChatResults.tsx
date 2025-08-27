@@ -1,10 +1,17 @@
 // components/chat/ChatResults.tsx
 "use client";
 import { AskAnswers, ProviderBrand } from "@/app/lib/types";
-import ReactMarkdown from "react-markdown";
+import React from "react";
+import ReactMarkdown, { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import ModelBadge from "../ui/ModelBadge";
+import CodeBlock from "../md/CodeBlock";
 
+// Props the `code` renderer actually sees
+type CodeRendererProps = React.ComponentPropsWithoutRef<"code"> & {
+  inline?: boolean;
+  node?: unknown; // react-markdown adds this
+};
 
 export default function ChatResults({
   answers, isRunning, brandOf, onOpenModel,
@@ -14,6 +21,14 @@ export default function ChatResults({
   brandOf: (m: string) => ProviderBrand;
   onOpenModel: (m: string) => void;
 }) {
+  const components = {
+    code: ({ inline, className, children, ...rest }: CodeRendererProps) => (
+      <CodeBlock inline={!!inline} className={className} {...rest}>
+        {children as React.ReactNode}
+      </CodeBlock>
+    ),
+  } satisfies Components;
+
   return (
     <>
       {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => {
@@ -35,11 +50,13 @@ export default function ChatResults({
                 {hasErr ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
               </span>
             </div>
+
             <div className="prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
                 {hasErr ? error || "" : (answer || (isRunning ? "…" : ""))}
               </ReactMarkdown>
             </div>
+
             <div className="mt-2 text-xs text-zinc-500 dark:text-zinc-400 opacity-0 group-hover:opacity-100 transition-opacity">
               Click to continue chatting with this model
             </div>

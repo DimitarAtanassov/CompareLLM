@@ -11,36 +11,29 @@ const BRAND_TO_DEFAULT_WIRE: Partial<Record<ProviderBrand, ProviderWire>> = {
 };
 
 export const isProviderWire = (x?: string | null): x is ProviderWire =>
-  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "unknown";
+  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "cohere" || x === "unknown";
 
 export const isProviderBrand = (x?: string | null): x is ProviderBrand =>
-  x === "anthropic" ||
-  x === "openai" ||
-  x === "gemini" ||
-  x === "ollama" ||
-  x === "deepseek" ||
-  x === "voyage" ||
-  x === "cerebras" ||      // <-- add
-  x === "unknown";
+  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" ||
+  x === "deepseek" || x === "voyage" || x === "cerebras" || x === "google" ||
+  x === "cohere" || x === "unknown";
 
-/** Normalize any provider/type string to a canonical brand. */
 export const coerceBrand = (t?: string): ProviderBrand => {
   const s = (t || "").toLowerCase();
-  // handle common typos / aliases first
-  if (s.includes("cerebras") || s.includes("cerberus")) return "cerebras";
-  if (s.includes("voyage")) return "voyage";
   if (s.includes("gemini") || s.includes("google")) return "google";
-  if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
-  return "unknown";
+  if (s.includes("cerebras") || s.includes("cerberus")) return "cerebras";
+  if (s.includes("cohere")) return "cohere";     // <-- NEW
+  if (s.includes("voyage")) return "voyage";
+  // keep your old fallback:
+  // if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
+  return (["openai","anthropic","gemini","ollama","deepseek","voyage","cerebras","google","cohere", "unknown"] as const)
+    .includes(s as ProviderBrand) ? (s as ProviderBrand) : "unknown";
 };
 
 export const coerceWire = (p: ProviderInfo): ProviderWire => {
-  if (isProviderWire(p.wire)) return p.wire!;
+  if (p.wire && ["anthropic","openai","gemini","ollama","cohere","unknown"].includes(p.wire)) return p.wire as ProviderWire;
   const brand = coerceBrand(p.type);
-  const inferred = BRAND_TO_DEFAULT_WIRE[brand];
-  if (inferred) return inferred;
-  if (isProviderWire(p.type)) return p.type as ProviderWire;
-  return "unknown";
+  return BRAND_TO_DEFAULT_WIRE[brand] ?? (["anthropic","openai","gemini","ollama","cohere"].includes(p.type) ? (p.type as ProviderWire) : "unknown");
 };
 
 export function redactResult(row: SearchResult): Record<string, unknown> {

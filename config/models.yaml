@@ -99,6 +99,22 @@ providers:
       - voyage-2
       - voyage-lite-02-instruct
 
+  cohere:
+    type: cohere
+    wire: cohere
+    base_url: https://api.cohere.ai
+    api_key_env: COHERE_API_KEY
+    headers: {}
+    models:
+      - command-r-plus
+      - command-r-08-2024
+      - command-r
+    embedding_models:
+      - embed-english-v3.0
+      - embed-multilingual-v3.0
+      - embed-english-light-v3.0
+      - embed-multilingual-light-v3.0
+
 # Default settings
 defaults:
   temperature: 0.7

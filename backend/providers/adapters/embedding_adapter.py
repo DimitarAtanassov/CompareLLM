@@ -1,5 +1,5 @@
 #app/backend/providers/adapters/embedding_adapter.py
-from typing import List
+from typing import Any, Dict, List, Optional
 import httpx
 
 from core.exceptions import ProviderError
@@ -33,7 +33,7 @@ class EmbeddingAdapter:
         except Exception as e:
             if isinstance(e, ProviderError):
                 raise
-            raise ProviderError(provider.name, str(e))
+            raise ProviderError(provider.name, str(e), e)
     
     async def _openai_embeddings(
         self, provider: Provider, model: str, texts: List[str], timeout_s: int
@@ -73,26 +73,66 @@ class EmbeddingAdapter:
         return all_embeddings
     
     async def _cohere_embeddings(
-        self, provider: Provider, model: str, texts: List[str], timeout_s: int
+        self,
+        provider: "Provider",
+        model: str,
+        texts: List[str],
+        timeout_s: int,
+        *,
+        input_type: Optional[str] = None,   # "search_document" | "search_query" | "classification" | "clustering"
+        truncate: Optional[str] = None,     # "NONE" | "START" | "END"
     ) -> List[List[float]]:
-        """Handle Cohere embeddings."""
-        headers = dict(provider.headers or {})
-        if provider.api_key:
-            headers["Authorization"] = f"Bearer {provider.api_key}"
-        
-        url = f"{provider.base_url}/v1/embed"
-        payload = {
+        """Call Cohere /v1/embed and return List[List[float]]."""
+        base = provider.base_url.rstrip("/")
+        url = f"{base}/v1/embed"  # Cohere embeddings endpoint
+
+        # Build headers
+        key = (provider.api_key or "").strip()
+        if not key:
+            raise ProviderError(provider.name, "Missing API key")
+        if key.lower().startswith("bearer "):
+            key = key[7:].strip()
+        headers: Dict[str, str] = {
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            # "Cohere-Version": "2022-12-06",  # optional; only if your account requires explicit versioning
+        }
+        if provider.headers:
+            headers.update(provider.headers)
+
+        # Payload
+        payload: Dict[str, Any] = {
             "model": model,
             "texts": texts,
-            "input_type": "search_document"
+            "input_type": input_type or "search_document",
         }
-        
+        if truncate:
+            payload["truncate"] = truncate  # optional; controls how overlong inputs are handled
+
         async with httpx.AsyncClient(timeout=timeout_s) as client:
-            r = await client.post(url, headers=headers, json=payload)
-            self._raise_for_status(r)
-            data = r.json()
-            return data["embeddings"]
-    
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 400:
+                # Surface helpful body info
+                body = resp.text
+                raise ProviderError(provider.name, f"embed {resp.status_code}: {body}", None)
+
+            data = resp.json()
+
+            # Cohere responses are typically one of:
+            #  A) {"embeddings": [[...], [...]]}
+            #  B) {"embeddings": {"float": [[...], [...]]}}  (SDK-style)
+            embs = data.get("embeddings")
+            if isinstance(embs, dict) and "float" in embs and isinstance(embs["float"], list):
+                return embs["float"]
+            if isinstance(embs, list) and embs and all(isinstance(v, list) for v in embs):
+                return embs
+            # Very rarely: [{"embedding":[...]} ...]
+            if isinstance(embs, list) and embs and isinstance(embs[0], dict) and "embedding" in embs[0]:
+                return [e["embedding"] for e in embs]
+
+            raise ProviderError(provider.name, f"Unexpected embed response shape: {data}")
+
+        
     async def _voyage_embeddings(
         self, provider: Provider, model: str, texts: List[str], timeout_s: int
     ) -> List[List[float]]:

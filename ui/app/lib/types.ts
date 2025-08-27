@@ -1,5 +1,7 @@
 // lib/types.ts
-export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "unknown";
+// lib/types.ts
+export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "cohere" | "unknown";
+
 export type ProviderBrand =
   | "openai"
   | "anthropic"
@@ -9,7 +11,10 @@ export type ProviderBrand =
   | "cerebras"
   | "voyage"
   | "google"
+  | "cohere" 
   | "unknown";
+
+export type KnownProviderBrand = Exclude<ProviderBrand, "unknown">;
 
 export type ProviderInfo = {
   name: string;

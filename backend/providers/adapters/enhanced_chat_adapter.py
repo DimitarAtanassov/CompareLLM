@@ -1,6 +1,6 @@
 # backend/adapters/enhanced_chat_adapter.py
 import asyncio
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 import httpx
 import json
 
@@ -8,6 +8,8 @@ from core.exceptions import ProviderError
 from providers.base import Provider
 from providers.anthropic_params import AnthropicParameters, create_anthropic_params, get_model_config
 
+
+_CO_ROLE = {"user": "USER", "assistant": "ASSISTANT", "system": "SYSTEM", "tool": "TOOL"}
 # Per-host locks for serialization
 _HOST_LOCKS: Dict[str, asyncio.Semaphore] = {}
 
@@ -75,6 +77,10 @@ class EnhancedChatAdapter:
                 )
             elif wire == "ollama":
                 return await self._ollama_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+                )
+            elif wire == "cohere":
+                return await self._cohere_chat(
                     provider, model, messages, temperature, max_tokens, timeout_s, provider_params
                 )
             else:
@@ -730,6 +736,125 @@ class EnhancedChatAdapter:
             except Exception:
                 detail = response.text
             raise RuntimeError(f"{response.status_code} {response.reason_phrase}: {detail}") from e
+    
+    @staticmethod
+    def _cohere_headers(provider: "Provider") -> Dict[str, str]:
+        key = (provider.api_key or "").strip()
+        if not key:
+            raise ProviderError(f"Missing API key for provider '{provider.name}'")
+        h = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        if provider.headers:
+            h.update(provider.headers)
+        return h
+
+    @staticmethod
+    def _cohere_messages(messages: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        out: List[Dict[str, Any]] = []
+        for m in messages:
+            role = _CO_ROLE.get((m.get("role") or "user").lower(), "USER")
+            content = m.get("content", "")
+            out.append({"role": role, "content": content})
+        return out
+
+    async def _cohere_chat(
+        self,
+        provider: "Provider",
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        timeout_s: int = 60,
+        provider_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Cohere Chat API (v1) expects:
+          - message: the latest non-empty USER input (string)
+          - chat_history: prior turns as [{role:"USER"|"CHATBOT", message:str}]
+          - preamble: optional system prompt(s) combined
+        """
+        base = provider.base_url.rstrip("/")
+        url = f"{base}/v1/chat"
+        headers = self._cohere_headers(provider)  # uses Bearer {api_key} + Content-Type
+
+        # 1) Collect system → preamble
+        system_texts = [
+            (m.get("content") or "").strip()
+            for m in messages
+            if (m.get("role") or "").lower() == "system"
+        ]
+        preamble = "\n".join([s for s in system_texts if s]) or None
+
+        # 2) Pull out conversational (user/assistant) turns (no empties)
+        convo: List[Dict[str, str]] = []
+        for m in messages:
+            role = (m.get("role") or "").lower()
+            if role not in ("user", "assistant"):
+                continue
+            text = (m.get("content") or "").strip()
+            if not text:
+                continue
+            convo.append({"role": role, "content": text})
+
+        # 3) Latest non-empty USER msg becomes `message`; others form chat_history
+        #    Cohere wants role names: USER / CHATBOT; field name is `message` (not content)
+        def to_co_role(r: str) -> str:
+            return "USER" if r == "user" else "CHATBOT"
+
+        # Find last user message
+        last_user_idx = max(
+            (i for i, m in enumerate(convo) if m["role"] == "user"),
+            default=-1,
+        )
+        if last_user_idx == -1:
+            # No user input -> surface a clear error before hitting the API
+            raise ProviderError(provider.name, "Cohere requires a non-empty user message.")
+
+        user_message = convo[last_user_idx]["content"]
+        if not user_message.strip():
+            raise ProviderError(provider.name, "Cohere requires a non-empty user message.")
+
+        # Everything except that last user message becomes chat_history
+        chat_history: List[Dict[str, str]] = []
+        for i, m in enumerate(convo):
+            if i == last_user_idx:
+                continue
+            chat_history.append({"role": to_co_role(m["role"]), "message": m["content"]})
+
+        # 4) Build payload
+        payload: Dict[str, Any] = {
+            "model": model,
+            "message": user_message,
+        }
+        if chat_history:
+            payload["chat_history"] = chat_history
+        if preamble:
+            payload["preamble"] = preamble
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+
+        # Allow a minimal set of Cohere-specific params if provided
+        if isinstance(provider_params, dict):
+            src = provider_params.get("cohere_params", provider_params) or {}
+            for k in ("stop_sequences", "seed", "frequency_penalty", "presence_penalty", "tools", "tool_results"):
+                if k in src and src[k] is not None:
+                    payload[k] = src[k]
+
+        # 5) Call API
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code >= 400:
+                raise ProviderError(provider.name, f"Cohere error {resp.status_code}: {resp.text}")
+
+            data = resp.json()
+            # Prefer message.content segments if present, else top-level text
+            msg = (data.get("message") or {})
+            content = msg.get("content")
+            if isinstance(content, list):
+                return "".join(part.get("text", "") for part in content if isinstance(part, dict))
+            return data.get("text", "") or ""
+
 
 
 # --- Backward compatibility alias (safe removal after full migration) ---
