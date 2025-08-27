@@ -14,12 +14,17 @@ type CodeRendererProps = React.ComponentPropsWithoutRef<"code"> & {
 };
 
 export default function ChatResults({
-  answers, isRunning, brandOf, onOpenModel,
+  answers,
+  isRunning,
+  brandOf,
+  onOpenModel,
+  onRemoveModel, // 👈 added
 }: {
   answers: AskAnswers;
   isRunning: boolean;
   brandOf: (m: string) => ProviderBrand;
   onOpenModel: (m: string) => void;
+  onRemoveModel: (m: string) => void; // 👈 added
 }) {
   const components = {
     code: ({ inline, className, children, ...rest }: CodeRendererProps) => (
@@ -34,26 +39,45 @@ export default function ChatResults({
       {Object.entries(answers).map(([model, { answer, error, latency_ms }]) => {
         const brand = brandOf(model);
         const hasErr = Boolean(error);
+
         return (
           <div
             key={model}
-            className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
+            className="relative rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 bg-white dark:bg-zinc-950 shadow-sm cursor-pointer hover:border-orange-300 dark:hover:border-orange-600 transition-colors group"
             onClick={() => onOpenModel(model)}
             title="Click to continue chatting with this model"
           >
+            {/* Close button */}
+            <button
+              onClick={(e) => {
+                e.stopPropagation(); // prevent triggering onOpenModel
+                onRemoveModel(model);
+              }}
+              className="absolute top-2 right-2 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+              title="Remove this result"
+            >
+              ✕
+            </button>
+
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <h2 className="text-sm font-semibold font-mono">{model}</h2>
                 <ModelBadge brand={brand} />
               </div>
               <span className="text-xs text-zinc-500 dark:text-zinc-400">
-                {hasErr ? "⚠ Error" : latency_ms ? `${(latency_ms / 1000).toFixed(1)}s` : isRunning ? "running…" : ""}
+                {hasErr
+                  ? "⚠ Error"
+                  : latency_ms
+                  ? `${(latency_ms / 1000).toFixed(1)}s`
+                  : isRunning
+                  ? "running…"
+                  : ""}
               </span>
             </div>
 
             <div className="prose prose-sm dark:prose-invert max-w-none">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
-                {hasErr ? error || "" : (answer || (isRunning ? "…" : ""))}
+                {hasErr ? error || "" : answer || (isRunning ? "…" : "")}
               </ReactMarkdown>
             </div>
 

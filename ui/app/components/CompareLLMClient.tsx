@@ -186,6 +186,13 @@ export default function CompareLLMClient(): JSX.Element {
       return next;
     });
   }, []);
+  const handleRemoveModel = useCallback((model: string) => {
+  setAnswers((prev) => {
+    const next = { ...prev };
+    delete next[model];
+    return next;
+  });
+}, []);
 
   // =============================
   // Interactive Chat
@@ -1082,9 +1089,8 @@ export default function CompareLLMClient(): JSX.Element {
               answers={answers}
               isRunning={isRunning}
               brandOf={getProviderType}
-              onOpenModel={(m) => {
-                openModelChat(m);
-              }}
+              onOpenModel={(m) => openModelChat(m)}
+              onRemoveModel={handleRemoveModel} // 👈 add this
             />
             <div ref={bottomRef} />
           </section>
