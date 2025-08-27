@@ -7,6 +7,7 @@ const BRAND_TO_DEFAULT_WIRE: Partial<Record<ProviderBrand, ProviderWire>> = {
   voyage: "openai",
   // NEW: Cerebras uses OpenAI-compatible API
   cerebras: "openai",
+  google: "gemini"
 };
 
 export const isProviderWire = (x?: string | null): x is ProviderWire =>
@@ -28,7 +29,7 @@ export const coerceBrand = (t?: string): ProviderBrand => {
   // handle common typos / aliases first
   if (s.includes("cerebras") || s.includes("cerberus")) return "cerebras";
   if (s.includes("voyage")) return "voyage";
-
+  if (s.includes("gemini") || s.includes("google")) return "google";
   if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
   return "unknown";
 };

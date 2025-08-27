@@ -8,6 +8,7 @@ export type ProviderBrand =
   | "deepseek"
   | "cerebras"
   | "voyage"
+  | "google"
   | "unknown";
 
 export type ProviderInfo = {
