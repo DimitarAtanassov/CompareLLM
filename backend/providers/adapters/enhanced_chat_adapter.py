@@ -264,7 +264,11 @@ class EnhancedChatAdapter:
 
         # ✅ sanitize by family
         payload = self._sanitize_openai_payload(model, payload)
+        unsupported_for_cerebras = {"frequency_penalty", "presence_penalty", "logit_bias", "parallel_tool_calls", "service_tier"}
 
+        is_cerebras = getattr(provider, "type", "").lower() == "cerebras" or "cerebras" in provider.base_url
+        if is_cerebras and isinstance(payload, dict):
+            payload = {k: v for k, v in payload.items() if k not in unsupported_for_cerebras}
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             r = await client.post(url, headers=headers, json=payload)
             # 🔁 non-stream: use raise_for_status, not ensure_ok_stream

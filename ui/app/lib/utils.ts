@@ -1,25 +1,35 @@
 // lib/utils.ts
 "use client";
-import type {
-  ProviderInfo, ProviderBrand, ProviderWire, SearchResult,
-} from "./types";
+import type { ProviderInfo, ProviderBrand, ProviderWire, SearchResult } from "./types";
 
 const BRAND_TO_DEFAULT_WIRE: Partial<Record<ProviderBrand, ProviderWire>> = {
   deepseek: "openai",
   voyage: "openai",
+  // NEW: Cerebras uses OpenAI-compatible API
+  cerebras: "openai",
 };
 
 export const isProviderWire = (x?: string | null): x is ProviderWire =>
   x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "unknown";
 
 export const isProviderBrand = (x?: string | null): x is ProviderBrand =>
-  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" ||
-  x === "deepseek" || x === "voyage" || x === "unknown";
+  x === "anthropic" ||
+  x === "openai" ||
+  x === "gemini" ||
+  x === "ollama" ||
+  x === "deepseek" ||
+  x === "voyage" ||
+  x === "cerebras" ||      // <-- add
+  x === "unknown";
 
+/** Normalize any provider/type string to a canonical brand. */
 export const coerceBrand = (t?: string): ProviderBrand => {
   const s = (t || "").toLowerCase();
-  if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
+  // handle common typos / aliases first
+  if (s.includes("cerebras") || s.includes("cerberus")) return "cerebras";
   if (s.includes("voyage")) return "voyage";
+
+  if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
   return "unknown";
 };
 

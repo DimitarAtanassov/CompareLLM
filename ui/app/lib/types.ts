@@ -1,11 +1,12 @@
 // lib/types.ts
 export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "unknown";
 export type ProviderBrand =
-  | "anthropic"
   | "openai"
+  | "anthropic"
   | "gemini"
   | "ollama"
   | "deepseek"
+  | "cerebras"
   | "voyage"
   | "unknown";
 

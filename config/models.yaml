@@ -72,6 +72,20 @@ providers:
       - gemini-1.5-pro-latest
     embedding_models:
       - embedding-001
+  
+  cerebras:
+    type: cerebras
+    wire: openai
+    base_url: https://api.cerebras.ai/v1
+    api_key_env: CEREBRAS_API_KEY
+    headers: {}   # nothing special required
+    models:
+      - gpt-oss-120b
+      - llama3.1-8b
+      - llama-4-scout-17b-16e-instruct
+      - qwen-3-32b
+      # add any you enable in Cerebras Console
+    embedding_models: []   # Cerebras doesn’t expose an embeddings endpoint
 
   # Voyage AI
   voyage:
