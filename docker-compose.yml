@@ -1,9 +1,9 @@
 services:
-  # Ollama Service (for local models)
+  # Ollama Service (local models)
   ollama:
     image: ollama/ollama:latest
-    platform: linux/arm64/v8  # Change to linux/amd64 for Intel/AMD systems
-    ports: 
+    # Do NOT pin platform; image is multi-arch (AMD64/ARM64)
+    ports:
       - "11434:11434"
     volumes:
       - ollama:/root/.ollama
@@ -36,7 +36,8 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts/pull-models.sh:/pull-models.sh:ro
-    entrypoint: ["/bin/sh", "/pull-models.sh"]
+    # Make sure script runs even if Windows checked out with CRLF
+    entrypoint: ["/bin/sh", "-lc", "apk add --no-cache dos2unix >/dev/null 2>&1 || true; dos2unix /pull-models.sh >/dev/null 2>&1 || true; chmod +x /pull-models.sh; /pull-models.sh"]
     restart: "no"
     networks:
       - app-network
@@ -45,13 +46,11 @@ services:
   api:
     build: ./backend
     environment:
-      # Configuration
       MODELS_CONFIG: /config/models.yaml
       MODELS_CONFIG_PATH: /config/models.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       HOST: 0.0.0.0
       PORT: 8080
-      
       # Chat model API keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
@@ -62,19 +61,19 @@ services:
       # Embedding model API keys
       COHERE_API_KEY: ${COHERE_API_KEY}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY}
-      
       # Ollama connection
       OLLAMA_HOST: http://ollama:11434
     volumes:
       - ./config:/config:ro
       - ./backend/logs:/app/logs
-    ports: 
+    ports:
       - "8080:8080"
     depends_on:
       model-puller:
         condition: service_completed_successfully
+    # Ensure curl exists in the image OR change to wget if needed
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -87,15 +86,15 @@ services:
   ui:
     build: ./ui
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080   # <- matches rewrite
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
       NEXT_PUBLIC_API_URL: http://api:8080
       NODE_ENV: production
-    ports: 
+    ports:
       - "3000:3000"
-    depends_on: 
+    depends_on:
       - api
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000"]
       interval: 30s
       timeout: 10s
       retries: 3
