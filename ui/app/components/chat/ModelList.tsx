@@ -76,15 +76,6 @@ export default function ModelList({
           );
         })}
       </div>
-
-      {/* Drag handle */}
-      <div
-        onMouseDown={beginDrag}
-        className="relative h-3 w-full cursor-row-resize select-none"
-        title="Drag to resize"
-      >
-        <div className="absolute left-1/2 -translate-x-1/2 top-0.5 h-2 w-16 rounded-full bg-zinc-300 dark:bg-zinc-700" />
-      </div>
     </div>
   );
 }

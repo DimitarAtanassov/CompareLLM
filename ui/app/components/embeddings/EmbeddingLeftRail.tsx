@@ -1,10 +1,10 @@
+// components/embeddings/EmbeddingLeftRail.tsx
 "use client";
 
 import { PROVIDER_TEXT_COLOR } from "@/app/lib/colors";
 import { Dataset, ProviderBrand } from "@/app/lib/types";
-import React, { JSX } from "react";
+import React, { JSX, useCallback, useRef, useState } from "react";
 import Spinner from "../ui/Spinner";
-
 
 type EmbeddingLeftRailProps = {
   // model selection
@@ -92,6 +92,29 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
     deleteDataset,
   } = props;
 
+  // --- Drag-to-resize for Embedding Models list (matches ModelList styling/behavior) ---
+  const MIN_H = 140;
+  const MAX_H = 520;
+  const [embedListHeight, setEmbedListHeight] = useState<number>(260);
+  const dragRef = useRef<{ startY: number; startH: number } | null>(null);
+
+  const beginDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    dragRef.current = { startY: e.clientY, startH: embedListHeight };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragRef.current) return;
+      const dy = ev.clientY - dragRef.current.startY;
+      const next = Math.min(MAX_H, Math.max(MIN_H, dragRef.current.startH + dy));
+      setEmbedListHeight(next);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      dragRef.current = null;
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [embedListHeight]);
+
   return (
     <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm space-y-4">
       {/* Embedding Models */}
@@ -113,28 +136,55 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
             </button>
           </div>
         </div>
-        <div className="max-h-[160px] overflow-auto rounded-xl border border-zinc-200 dark:border-zinc-800 p-2 grid grid-cols-1 gap-1 mt-2">
-          {allEmbeddingModels.length === 0 && (
-            <div className="text-sm text-zinc-500 dark:text-zinc-400">No embedding models discovered yet.</div>
-          )}
-          {allEmbeddingModels.map((m) => {
-            const brand = getProviderType(m);
-            return (
-              <label
-                key={m}
-                className="flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer hover:bg-orange-50 dark:hover:bg-orange-400/10"
-              >
-                <input
-                  type="checkbox"
-                  className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
-                  checked={selectedEmbeddingModels.includes(m)}
-                  onChange={() => toggleEmbeddingModel(m)}
-                />
-                <span className="text-sm font-mono flex-1">{m}</span>
-                <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_TEXT_COLOR[brand]} bg-current/10`}>{brand}</span>
-              </label>
-            );
-          })}
+
+        {/* Resizable list (same UX as ModelList) */}
+        <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 mt-2">
+          <div
+            className="overflow-auto p-2 grid grid-cols-1 gap-1"
+            style={{ height: embedListHeight }}
+            aria-label="Embedding model selection list"
+          >
+            {allEmbeddingModels.length === 0 && (
+              <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                No embedding models discovered yet.
+              </div>
+            )}
+            {allEmbeddingModels.map((m) => {
+              const brand = getProviderType(m);
+              const checked = selectedEmbeddingModels.includes(m);
+              return (
+                <label
+                  key={m}
+                  className={[
+                    "flex items-center gap-2 px-2 py-1 rounded-lg cursor-pointer",
+                    "hover:bg-orange-50 dark:hover:bg-orange-400/10",
+                    checked ? "ring-1 ring-orange-300/60 dark:ring-orange-500/40" : "",
+                  ].join(" ")}
+                  title={m}
+                >
+                  <input
+                    type="checkbox"
+                    className="accent-orange-600 dark:accent-orange-500 cursor-pointer"
+                    checked={checked}
+                    onChange={() => toggleEmbeddingModel(m)}
+                  />
+                  <span className="text-sm font-mono flex-1 truncate">{m}</span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_TEXT_COLOR[brand]} bg-current/10`}>
+                    {brand}
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+
+          {/* Drag handle (matches ModelList) */}
+          <div
+            onMouseDown={beginDrag}
+            className="relative h-3 w-full cursor-row-resize select-none"
+            title="Drag to resize"
+          >
+            <div className="absolute left-1/2 -translate-x-1/2 top-0.5 h-2 w-16 rounded-full bg-zinc-300 dark:bg-zinc-700" />
+          </div>
         </div>
       </div>
 
@@ -196,8 +246,9 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
           >
             <option value="">-- Select a dataset --</option>
             {datasets.map((d) => (
+              // 🔄 Removed (document_count) from the label per your request
               <option key={d.dataset_id} value={d.dataset_id}>
-                {d.dataset_id} ({d.document_count})
+                {d.dataset_id}
               </option>
             ))}
           </select>
