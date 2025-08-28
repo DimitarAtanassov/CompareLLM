@@ -52,7 +52,6 @@ Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for exper
 ```bash
 git clone https://github.com/your-org/askmanyllms.git
 cd askmanyllms
-cp .env.example .env
 ```
 
 ### 2. Edit `.env`
