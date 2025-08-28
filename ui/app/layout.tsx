@@ -14,7 +14,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Multi-LLM Prompt Runner",
+  title: "CompareLLM",
   description: "Prompt multiple LLMs at once and compare answers side-by-side.",
 };
 

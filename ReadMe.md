@@ -43,6 +43,7 @@ Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for exper
 * **Backend:** FastAPI, Python 3.11
 * **Infra:** Docker Compose (multi-container), Node, Yarn
 * **Providers:** Anthropic, OpenAI, DeepSeek, Gemini, Ollama, Cerebras, Cohere, Voyage
+
 ---
 
 ## 🚀 Quick Start
@@ -134,6 +135,30 @@ Visit [http://localhost:3000](http://localhost:3000)
 1. Upload JSON documents with IDs and text
 2. Run **single-model search** or **multi-model comparison**
 3. Inspect cosine similarity, metadata, and raw JSON results
+
+---
+
+## 📸 Screenshots
+
+### 1. Prompt Input & Multi-Model Comparison
+
+![Prompt Input](./prompt_in.png)
+
+### 2. Model Completion Results
+
+![Completion Results](./completion.png)
+
+### 3. Interactive Single Model Chat
+
+![Single Model Interaction](./singleModelInteraction.png)
+
+### 4. Side-by-Side Embedding Comparison
+
+![Side-by-Side Embedding Comparison](./side_by_side_embed.png)
+
+### 5. Single-Model Embedding Search
+
+![Single-Model Embedding Search](./single_embed_search.png)
 
 ---
 

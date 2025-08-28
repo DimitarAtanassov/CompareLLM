@@ -1,12 +1,18 @@
 // components/chat/ModelList.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { PROVIDER_TEXT_COLOR } from "@/app/lib/colors";
 import { ProviderBrand } from "@/app/lib/types";
 
 export default function ModelList({
-  models, selected, onToggle, brandOf, initialHeightPx = 200, minHeightPx = 140, maxHeightPx = 520,
+  models,
+  selected,
+  onToggle,
+  brandOf,
+  initialHeightPx = 200,
+  minHeightPx = 140,
+  maxHeightPx = 520,
 }: {
   models: string[];
   selected: string[];
@@ -20,31 +26,52 @@ export default function ModelList({
   maxHeightPx?: number;
 }) {
   const [height, setHeight] = useState<number>(initialHeightPx);
+  const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
-  const beginDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    dragRef.current = { startY: e.clientY, startH: height };
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const dy = ev.clientY - dragRef.current.startY;
-      const next = Math.min(maxHeightPx, Math.max(minHeightPx, dragRef.current.startH + dy));
-      setHeight(next);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      dragRef.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [height, minHeightPx, maxHeightPx]);
+  const beginDrag = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      dragRef.current = { startY: e.clientY, startH: height };
+      setIsDragging(true);
+
+      const onMove = (ev: MouseEvent) => {
+        if (!dragRef.current) return;
+        const dy = ev.clientY - dragRef.current.startY;
+        const next = Math.min(
+          maxHeightPx,
+          Math.max(minHeightPx, dragRef.current.startH + dy)
+        );
+        setHeight(next);
+      };
+
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        dragRef.current = null;
+        setIsDragging(false);
+      };
+
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [height, minHeightPx, maxHeightPx]
+  );
 
   if (models.length === 0) {
-    return <div className="text-sm text-zinc-500 dark:text-zinc-400">No models discovered yet.</div>;
+    return (
+      <div className="text-sm text-zinc-500 dark:text-zinc-400">
+        No models discovered yet.
+      </div>
+    );
   }
 
   return (
-    <div className="rounded-xl border border-zinc-200 dark:border-zinc-800">
+    <div
+      className={[
+        "rounded-xl border border-zinc-200 dark:border-zinc-800",
+        isDragging ? "select-none cursor-row-resize" : "",
+      ].join(" ")}
+    >
       {/* Scrollable, resizable list */}
       <div
         className="overflow-auto p-2 grid grid-cols-1 gap-1"
@@ -71,10 +98,29 @@ export default function ModelList({
                 onChange={() => onToggle(m)}
               />
               <span className="text-sm font-mono flex-1 truncate">{m}</span>
-              <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_TEXT_COLOR[brand]} bg-current/10`}>{brand}</span>
+              <span
+                className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_TEXT_COLOR[brand]} bg-current/10`}
+              >
+                {brand}
+              </span>
             </label>
           );
         })}
+      </div>
+
+      {/* Drag handle (matches EmbeddingLeftRail) */}
+      <div
+        onMouseDown={beginDrag}
+        className="relative h-3 w-full cursor-row-resize select-none"
+        title="Drag to resize"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize model list"
+        aria-valuemin={minHeightPx}
+        aria-valuemax={maxHeightPx}
+        aria-valuenow={Math.round(height)}
+      >
+        <div className="absolute left-1/2 -translate-x-1/2 top-0.5 h-2 w-16 rounded-full bg-zinc-300 dark:bg-zinc-700" />
       </div>
     </div>
   );

@@ -1,5 +1,6 @@
 // components/chat/ChatResults.tsx
 "use client";
+
 import { AskAnswers, ProviderBrand } from "@/app/lib/types";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { Components } from "react-markdown";
@@ -31,6 +32,7 @@ export default function ChatResults({
   onRemoveModel: (m: string) => void;
   onRetryModel: (m: string) => void;
 }) {
+  // Expand / collapse per-model
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggleExpanded = (model: string) =>
     setExpanded((prev) => {
@@ -39,7 +41,7 @@ export default function ChatResults({
       return next;
     });
 
-  // --- Finish flash + persist green border ---
+  // Flash + keep green border after a run
   const prevIsRunning = useRef<boolean>(isRunning);
   const [flashModels, setFlashModels] = useState<Set<string>>(new Set());
   const [completedModels, setCompletedModels] = useState<Set<string>>(new Set());
@@ -47,33 +49,39 @@ export default function ChatResults({
   useEffect(() => {
     const wasRunning = prevIsRunning.current;
 
-    // New run started: clear prior state so flash can play again later
+    // New run started: clear prior visual state so we can retrigger animation later
     if (!wasRunning && isRunning) {
       setFlashModels(new Set());
       setCompletedModels(new Set());
     }
 
-    // Run just finished: play flash, then keep subtle green border
-    let t: number | undefined;
+    // Run finished: mark all cards as completed, then trigger a pulse on next frame
+    let clearPulseTimer: number | undefined;
     if (wasRunning && !isRunning) {
       const keys = Object.keys(answers);
       const toSet = new Set(keys);
+
+      // 1) set completed (keeps the green border)
       setCompletedModels(toSet);
-      setFlashModels(toSet);
-      t = window.setTimeout(() => {
-        setFlashModels(new Set()); // leave green border, remove pulse class
-      }, 900);
+
+      // 2) trigger pulse after layout has caught up (avoids missed animations)
+      requestAnimationFrame(() => {
+        setFlashModels(toSet);
+        clearPulseTimer = window.setTimeout(() => {
+          setFlashModels(new Set()); // remove pulse but keep green border
+        }, 900);
+      });
     }
 
-    // update the ref *after* reacting
     prevIsRunning.current = isRunning;
 
     return () => {
-      if (t) clearTimeout(t);
+      if (clearPulseTimer) clearTimeout(clearPulseTimer);
     };
+    // Keep `answers` in deps so keys are accurate at finish time
   }, [isRunning, answers]);
 
-  // --- Per-model resizable heights ---
+  // Per-model resizable heights
   const [heights, setHeights] = useState<Record<string, number>>({});
   const [isResizing, setIsResizing] = useState(false);
   const resizeRef = useRef<{ model: string; startY: number; startH: number } | null>(null);
@@ -85,7 +93,6 @@ export default function ChatResults({
     resizeRef.current = { model, startY: e.clientY, startH: h };
     setIsResizing(true);
 
-    // global listeners
     window.addEventListener("mousemove", onMouseMove);
     window.addEventListener("mouseup", onMouseUp);
   };
@@ -106,6 +113,7 @@ export default function ChatResults({
     window.removeEventListener("mouseup", onMouseUp);
   };
 
+  // Markdown code renderer
   const components = useMemo(
     () =>
       ({
@@ -125,32 +133,33 @@ export default function ChatResults({
         isResizing ? "select-none cursor-ns-resize" : "",
       ].join(" ")}
     >
-      {/* Styled-JSX for the flash animation & handle */}
+      {/* Local styles for pulse + resize grip */}
       <style jsx>{`
         @keyframes greenPulse {
           0% {
             box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.0);
-            border-color: rgba(16, 185, 129, 0.35);
+            outline-color: rgba(16, 185, 129, 0.0);
           }
           25% {
             box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.15);
-            border-color: rgba(16, 185, 129, 0.55);
+            outline-color: rgba(16, 185, 129, 0.3);
           }
           50% {
             box-shadow: 0 0 0 10px rgba(16, 185, 129, 0.18);
-            border-color: rgba(16, 185, 129, 0.65);
+            outline-color: rgba(16, 185, 129, 0.45);
           }
           75% {
             box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.12);
-            border-color: rgba(16, 185, 129, 0.55);
+            outline-color: rgba(16, 185, 129, 0.3);
           }
           100% {
             box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.0);
-            border-color: rgba(16, 185, 129, 0.55);
+            outline-color: rgba(16, 185, 129, 0.0);
           }
         }
         .flash-green {
           animation: greenPulse 0.9s ease-in-out;
+          will-change: box-shadow, outline-color;
         }
         .resize-grip {
           position: absolute;
@@ -193,25 +202,28 @@ export default function ChatResults({
         const brand = brandOf(model);
         const hasErr = Boolean(error);
         const isOpen = expanded.has(model);
-
         const isFlashing = flashModels.has(model);
         const isCompleted = completedModels.has(model);
-
         const h = heights[model] ?? DEFAULT_HEIGHT;
 
         return (
           <div
             key={model}
             className={[
-              "relative rounded-2xl border p-0 shadow-sm bg-white dark:bg-zinc-950 transition-colors",
+              "relative rounded-2xl border p-0 shadow-sm bg-white dark:bg-zinc-950 transition-colors overflow-visible", // prevent pulse from being clipped
               isCompleted
                 ? "border-emerald-500/70 dark:border-emerald-500/70"
                 : "border-zinc-200 dark:border-zinc-800",
               isCompleted ? "shadow-[0_8px_24px_-8px_rgba(16,185,129,0.25)]" : "shadow-sm",
               isFlashing ? "flash-green" : "",
             ].join(" ")}
+            style={{
+              // give the animation an outline to show even when shadows get clipped by parent layouts
+              outline: isFlashing ? "2px solid rgba(16,185,129,0.0)" : "none",
+              outlineOffset: isFlashing ? "2px" : undefined,
+            }}
           >
-            {/* Header */}
+            {/* Header — clicking opens interactive modal */}
             <div
               className={[
                 "flex items-center justify-between px-4 py-2 rounded-t-2xl cursor-pointer transition",
@@ -244,14 +256,14 @@ export default function ChatResults({
                 >
                   {hasErr
                     ? "⚠ Error"
-                    : latency_ms
+                    : typeof latency_ms === "number"
                     ? `${(latency_ms / 1000).toFixed(1)}s`
                     : isRunning
                     ? "running…"
                     : "done"}
                 </span>
 
-                {/* Remove (X) */}
+                {/* Remove */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -269,17 +281,26 @@ export default function ChatResults({
             {/* Body */}
             <div className="px-4 pb-3">
               <div
+                id={`answer-${model}`}
                 className={[
                   "relative rounded-xl border bg-zinc-50/40 dark:bg-zinc-900/50 transition-colors",
                   isCompleted
                     ? "border-emerald-200/70 dark:border-emerald-800/60"
                     : "border-zinc-100 dark:border-zinc-800",
                 ].join(" ")}
-                style={{
-                  height: isOpen ? Math.max(h, MIN_HEIGHT) : Math.max(h, MIN_HEIGHT),
-                  maxHeight: isOpen ? MAX_HEIGHT : undefined,
-                  overflowY: "auto",
-                }}
+                style={
+                  isOpen
+                    ? {
+                        height: "auto",
+                        maxHeight: "none",
+                        overflowY: "visible",
+                      }
+                    : {
+                        height: Math.max(h, MIN_HEIGHT),
+                        maxHeight: Math.max(h, MIN_HEIGHT),
+                        overflowY: "auto",
+                      }
+                }
               >
                 <div className="prose dark:prose-invert max-w-none prose-sm md:prose-base px-4 py-3 prose-pre:overflow-x-auto prose-pre:whitespace-pre [&_pre]:rounded-lg [&_pre]:p-4">
                   <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
@@ -287,15 +308,17 @@ export default function ChatResults({
                   </ReactMarkdown>
                 </div>
 
-                {/* Drag handle */}
-                <div
-                  className="resize-grip cursor-ns-resize"
-                  title={`Drag to resize (min ${MIN_HEIGHT}px, max ${MAX_HEIGHT}px)`}
-                  onMouseDown={(e) => startResize(model, e)}
-                  role="separator"
-                  aria-orientation="vertical"
-                  aria-label="Resize result panel"
-                />
+                {/* Drag handle — only show when collapsed (clamped) */}
+                {!isOpen && (
+                  <div
+                    className="resize-grip cursor-ns-resize"
+                    title={`Drag to resize (min ${MIN_HEIGHT}px, max ${MAX_HEIGHT}px)`}
+                    onMouseDown={(e) => startResize(model, e)}
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize result panel"
+                  />
+                )}
               </div>
 
               {/* Footer actions */}
@@ -324,8 +347,12 @@ export default function ChatResults({
                     Retry
                   </button>
 
+                  {/* Expand / Collapse toggles height only */}
                   <button
-                    onClick={() => toggleExpanded(model)}
+                    onClick={(e) => {
+                      e.stopPropagation(); // don't trigger header click
+                      toggleExpanded(model);
+                    }}
                     className={[
                       "text-xs px-2 py-1 rounded-md border transition",
                       isCompleted
@@ -333,6 +360,7 @@ export default function ChatResults({
                         : "border-zinc-200 dark:border-zinc-700 hover:bg-zinc-50 dark:hover:bg-zinc-800",
                     ].join(" ")}
                     aria-expanded={isOpen}
+                    aria-controls={`answer-${model}`}
                   >
                     {isOpen ? "Collapse" : "Expand"}
                   </button>
