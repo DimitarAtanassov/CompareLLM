@@ -51,8 +51,8 @@ Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for exper
 ### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/your-org/askmanyllms.git
-cd askmanyllms
+git clone https://github.com/DimitarAtanassov/CompareLLM.git
+cd CompareLLM
 ```
 
 ### 2. Edit `.env`
