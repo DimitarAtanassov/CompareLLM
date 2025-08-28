@@ -187,13 +187,12 @@ export default function CompareLLMClient(): JSX.Element {
     const prev = prevSelectedRef.current;
     const next = new Set(selected);
 
-    const added = [...next].filter((m) => !prev.has(m));
     const removed = [...prev].filter((m) => !next.has(m));
 
     setExpandedModels((prevExp) => {
       const ns = new Set(prevExp);
-      added.forEach((m) => ns.add(m));   // auto-expand new selections
-      removed.forEach((m) => ns.delete(m)); // collapse on deselect
+      // Do NOT auto-expand newly added models
+      removed.forEach((m) => ns.delete(m)); // collapse when deselected
       return ns;
     });
 
@@ -1342,7 +1341,6 @@ export default function CompareLLMClient(): JSX.Element {
               onOpenModel={(m) => openModelChat(m)}
               onRemoveModel={handleRemoveModel}
               onRetryModel={retryModel}
-              onReprompt={repromptFromResults}
             />
             <div ref={bottomRef} />
           </section>

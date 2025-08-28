@@ -62,8 +62,8 @@ class EnhancedChatAdapter:
 
             wire = _get_wire(provider)
 
-            if wire == "openai":
-                # Any OpenAI-compatible provider (OpenAI, DeepSeek, Together, Groq, etc.)
+            if wire in ("openai", "cerebras", "groq", "together"):
+                # Treat Cerebras (and other OpenAI-compat) via the OpenAI adapter
                 return await self._openai_chat(
                     provider, model, messages, temperature, max_tokens, timeout_s, provider_params
                 )
@@ -255,32 +255,71 @@ class EnhancedChatAdapter:
             payload["max_tokens"] = int(max_tokens)  # sanitizer will flip for gpt-5
 
         # ✅ merge safe OpenAI params (supports either {"openai_params": {...}} or flat)
-        safe = ("top_p","frequency_penalty","presence_penalty","stop","tools","tool_choice","user")
+        safe = ("top_p", "frequency_penalty", "presence_penalty", "stop", "tools", "tool_choice", "user")
         src = (provider_params or {}).get("openai_params", provider_params or {})
         for k in safe:
             if k in src and src[k] is not None:
                 payload[k] = src[k]
 
         # ✅ coerce types to avoid 400s
-        if "top_p" in payload:               payload["top_p"] = float(payload["top_p"])
-        if "frequency_penalty" in payload:   payload["frequency_penalty"] = float(payload["frequency_penalty"])
-        if "presence_penalty" in payload:    payload["presence_penalty"] = float(payload["presence_penalty"])
+        if "top_p" in payload:             payload["top_p"] = float(payload["top_p"])
+        if "frequency_penalty" in payload: payload["frequency_penalty"] = float(payload["frequency_penalty"])
+        if "presence_penalty" in payload:  payload["presence_penalty"] = float(payload["presence_penalty"])
         if "stop" in payload and isinstance(payload["stop"], str):
             payload["stop"] = [payload["stop"]]
 
         # ✅ sanitize by family
         payload = self._sanitize_openai_payload(model, payload)
-        unsupported_for_cerebras = {"frequency_penalty", "presence_penalty", "logit_bias", "parallel_tool_calls", "service_tier"}
 
+        # Trim fields some OpenAI-compatible backends (like Cerebras) reject
+        unsupported_for_cerebras = {
+            "frequency_penalty", "presence_penalty", "logit_bias", "parallel_tool_calls", "service_tier"
+        }
         is_cerebras = getattr(provider, "type", "").lower() == "cerebras" or "cerebras" in provider.base_url
         if is_cerebras and isinstance(payload, dict):
             payload = {k: v for k, v in payload.items() if k not in unsupported_for_cerebras}
+
         async with httpx.AsyncClient(timeout=timeout_s) as client:
             r = await client.post(url, headers=headers, json=payload)
             # 🔁 non-stream: use raise_for_status, not ensure_ok_stream
             self._raise_for_status(r)
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+
+            # --- Defensive extraction across providers (Cerebras-safe) ---
+            choices = (data.get("choices") or [])
+            if not choices:
+                return ""
+
+            first = choices[0] or {}
+            message = first.get("message") or {}
+
+            # 1) Standard OpenAI-style
+            content = message.get("content")
+            if isinstance(content, str):
+                return content
+
+            # 2) Some providers may return plain text at top-level choice
+            text = first.get("text")
+            if isinstance(text, str):
+                return text
+
+            # 3) Rare: message.content could be a list of parts
+            if isinstance(content, list):
+                out: List[str] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        # e.g., {"text": "..."} or {"content": "..."}
+                        t = part.get("text") or part.get("content")
+                        if isinstance(t, str):
+                            out.append(t)
+                    elif isinstance(part, str):
+                        out.append(part)
+                if out:
+                    return "".join(out)
+
+            # 4) Fallback
+            return ""
+
 
 
     # --- OpenAI streaming ---
@@ -544,7 +583,8 @@ class EnhancedChatAdapter:
             """
             wire = _get_wire(provider)
 
-            if wire == "openai":
+            
+            if wire in ("openai", "cerebras", "groq", "together"):
                 headers = dict(provider.headers or {})
                 if getattr(provider, "api_key", None):
                     headers["Authorization"] = f"Bearer {provider.api_key}"
