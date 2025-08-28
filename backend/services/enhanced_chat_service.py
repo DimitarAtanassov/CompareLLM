@@ -13,6 +13,26 @@ from models.responses import ChatResponse, ModelAnswer
 from providers.registry import ModelRegistry, get_provider_for_model
 from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
 
+def _dump_params(obj) -> Dict[str, Any]:
+    """Return a plain dict with None values removed, from Pydantic v1/v2 or plain dict/obj."""
+    if obj is None:
+        return {}
+    # Pydantic v2
+    md = getattr(obj, "model_dump", None)
+    if callable(md):
+        return md(exclude_none=True)
+    # Pydantic v1
+    d = getattr(obj, "dict", None)
+    if callable(d):
+        return d(exclude_none=True)
+    # Already a dict?
+    if isinstance(obj, dict):
+        return {k: v for k, v in obj.items() if v is not None}
+    # Fallback to __dict__
+    if hasattr(obj, "__dict__"):
+        return {k: v for k, v in vars(obj).items() if v is not None}
+    return {}
+
 def _get_wire(provider) -> str:
     wire = getattr(provider, "wire", None)
     if wire:
@@ -82,6 +102,7 @@ class EnhancedChatService:
     
 
         # ---------- Decide streaming vs non-stream ----------
+    @staticmethod
     def is_openai_stream_model(m: str) -> bool:
         """
         Return True if model is an OpenAI GPT-family or O-preview variant
@@ -107,20 +128,12 @@ class EnhancedChatService:
 
         wire = _get_wire(provider)
 
-        # Build provider_params exactly once
-        provider_params: Dict[str, Any] = {}
-        if wire == "openai" and getattr(request, "openai_params", None):
-            provider_params["openai_params"] = request.openai_params
-        elif wire == "anthropic" and getattr(request, "anthropic_params", None):
-            provider_params.update(request.anthropic_params)
-        elif wire == "gemini" and getattr(request, "gemini_params", None):
-            provider_params.update(request.gemini_params)
-        elif wire == "ollama" and getattr(request, "ollama_params", None):
-            provider_params.update(request.ollama_params)
+        # Build provider params once (handles anthropic/openai/gemini/ollama safely)
+        provider_params: Dict[str, Any] = self._build_provider_params(model_name, request)
 
         start_time = time.perf_counter()
         try:
-            # Decide: stream via adapter.stream_chat, else adapter.chat_completion
+            # Decide: stream for OpenAI GPT/O* families; otherwise non-stream
             if wire == "openai" and self.is_openai_stream_model(model_name):
                 chunks: List[str] = []
                 async for delta in self.chat_adapter.stream_chat(
@@ -149,18 +162,18 @@ class EnhancedChatService:
 
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             log_event("enhanced_chat.model_end",
-                    provider=provider.name, model=model_name,
-                    ok=True, duration_ms=duration_ms,
-                    answer_chars=len(result or ""))
+                      provider=provider.name, model=model_name,
+                      ok=True, duration_ms=duration_ms,
+                      answer_chars=len(result or ""))
             return result
 
         except Exception as e:
             duration_ms = int((time.perf_counter() - start_time) * 1000)
             log_event("enhanced_chat.model_end",
-                    provider=provider.name, model=model_name,
-                    ok=False, duration_ms=duration_ms, error=str(e))
+                      provider=provider.name, model=model_name,
+                      ok=False, duration_ms=duration_ms, error=str(e))
             raise ProviderError(provider.name, str(e))
-            
+
 
 
     
@@ -415,28 +428,38 @@ class EnhancedChatService:
     # mirror your non-streaming merge logic here
     def _build_provider_params(self, model: str, req: EnhancedChatRequest) -> Dict[str, Any]:
         """
-        Merge per-model overrides with group params (anthropic/openai/gemini/ollama)
-        exactly like your existing non-streaming path.
+        Merge per-model overrides with provider-group params (anthropic/openai/gemini/ollama).
+        Ensures all provider params are plain dicts (no Pydantic models).
         """
         merged: Dict[str, Any] = {}
 
-        # Per-model overrides (temperature/max/min are passed separately, so ignore them here)
+        # Per-model overrides (ignore common generation fields handled elsewhere)
         if getattr(req, "model_params", None) and model in req.model_params:
             for k, v in (req.model_params[model] or {}).items():
                 if v is not None and k not in ("temperature", "max_tokens", "min_tokens"):
                     merged[k] = v
 
-        # Group params: copy only if present
-        if req.anthropic_params:
-            merged.update({k: v for k, v in req.anthropic_params.items() if v is not None})
-        if req.openai_params:
-            merged.update({"openai_params": {k: v for k, v in req.openai_params.items() if v is not None}})
-        if req.gemini_params:
-            merged.update({k: v for k, v in req.gemini_params.items() if v is not None})
-        if req.ollama_params:
-            merged.update({k: v for k, v in req.ollama_params.items() if v is not None})
+        # Provider-specific groups
+        anth = _dump_params(getattr(req, "anthropic_params", None))
+        oai  = _dump_params(getattr(req, "openai_params", None))
+        gem  = _dump_params(getattr(req, "gemini_params", None))
+        oll  = _dump_params(getattr(req, "ollama_params", None))
+
+        # For Anthropic/Gemini/Ollama we flatten into merged (common in adapters)
+        if anth:
+            merged.update(anth)
+        if gem:
+            merged.update(gem)
+        if oll:
+            merged.update(oll)
+
+        # For OpenAI many adapters prefer a namespaced key; if your adapter expects flattening,
+        # you can switch this to merged.update(oai) instead.
+        if oai:
+            merged["openai_params"] = oai
 
         return merged
+
 
 
 # Wire-up function used by FastAPI Depends(...)
