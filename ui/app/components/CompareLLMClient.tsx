@@ -69,14 +69,13 @@ type EnhancedChatRequest = {
 };
 
 export default function CompareLLMClient(): JSX.Element {
-  // ==== STATE (copied 1:1 from your page.tsx) ====
+  // ==== STATE ====
   const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
   const [embedView, setEmbedView] = useState<"single" | "compare">("single");
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
   const [allEmbeddingModels, setAllEmbeddingModels] = useState<string[]>([]);
-
   const [selected, setSelected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
@@ -88,7 +87,7 @@ export default function CompareLLMClient(): JSX.Element {
   const [modelChats, setModelChats] = useState<Record<string, ModelChat>>({});
   const [interactivePrompt, setInteractivePrompt] = useState<string>("");
 
-  // Embeddings state (unchanged)
+  // Embeddings
   const [datasets, setDatasets] = useState<Dataset[]>([]);
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
@@ -96,7 +95,7 @@ export default function CompareLLMClient(): JSX.Element {
   const [uploadingDataset, setUploadingDataset] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false); // (unused, kept to preserve API shape)
+  const [isSearching, setIsSearching] = useState(false); // kept for API shape
   const [jsonInput, setJsonInput] = useState<string>("");
   const [datasetId, setDatasetId] = useState<string>("");
   const [textField, setTextField] = useState<string>("text");
@@ -124,7 +123,13 @@ export default function CompareLLMClient(): JSX.Element {
   const [topKSingle, setTopKSingle] = useState<number>(5);
   const [topKCompare, setTopKCompare] = useState<number>(5);
   const useEnhancedAPI = true;
+
+  // Expanded parameter sections (per model)
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
+
+  // NEW: track last run prompt + input focus ref (for Reprompt)
+  const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   // ==== MEMO MAPS ====
   const modelToProvider = useMemo(() => {
@@ -149,7 +154,7 @@ export default function CompareLLMClient(): JSX.Element {
   const getProviderType = useCallback((m: string): ProviderBrand => modelToProvider[m] ?? "unknown", [modelToProvider]);
   const getProviderWire = useCallback((m: string): ProviderWire => modelToWire[m] ?? "unknown", [modelToWire]);
 
-  // ==== EFFECTS & LOADERS ====
+  // ==== LOAD PROVIDERS ====
   useEffect(() => {
     const load = async () => {
       setLoadingProviders(true);
@@ -170,12 +175,32 @@ export default function CompareLLMClient(): JSX.Element {
     void load();
   }, []);
 
-  // ==== Handlers ====
+  // ==== SELECTION HANDLERS ====
   const toggleModel = (m: string) =>
     setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
   const selectAll = () => setSelected(allModels);
   const clearAll = () => setSelected([]);
 
+  // Auto-expand on selection, collapse on deselection
+  const prevSelectedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const prev = prevSelectedRef.current;
+    const next = new Set(selected);
+
+    const added = [...next].filter((m) => !prev.has(m));
+    const removed = [...prev].filter((m) => !next.has(m));
+
+    setExpandedModels((prevExp) => {
+      const ns = new Set(prevExp);
+      added.forEach((m) => ns.add(m));   // auto-expand new selections
+      removed.forEach((m) => ns.delete(m)); // collapse on deselect
+      return ns;
+    });
+
+    prevSelectedRef.current = next;
+  }, [selected]);
+
+  // ==== PARAM HANDLERS ====
   const updateParam = useCallback((model: string, params: PerModelParam) => {
     setModelParams((prev) => ({ ...prev, [model]: params }));
   }, []);
@@ -187,12 +212,12 @@ export default function CompareLLMClient(): JSX.Element {
     });
   }, []);
   const handleRemoveModel = useCallback((model: string) => {
-  setAnswers((prev) => {
-    const next = { ...prev };
-    delete next[model];
-    return next;
-  });
-}, []);
+    setAnswers((prev) => {
+      const next = { ...prev };
+      delete next[model];
+      return next;
+    });
+  }, []);
 
   // =============================
   // Interactive Chat
@@ -342,7 +367,6 @@ export default function CompareLLMClient(): JSX.Element {
 
       type EnhancedResp = { answers?: AskAnswers };
       type OpenAIResp = { choices?: { message?: { content?: string } }[] };
-
       const result = (await res.json()) as unknown;
 
       const assistantMessage: string =
@@ -584,6 +608,7 @@ export default function CompareLLMClient(): JSX.Element {
 
     resetRun();
     setIsRunning(true);
+    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
 
     const processEvent = (evt: StreamEvent) => {
       if (evt.type === "chunk") {
@@ -672,6 +697,7 @@ export default function CompareLLMClient(): JSX.Element {
     if (!canRun) return;
     setIsRunning(true);
     resetRun();
+    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
     try {
       const perModel: Record<string, Partial<PerModelParam>> = {};
       for (const m of selected) {
@@ -794,6 +820,191 @@ export default function CompareLLMClient(): JSX.Element {
   }, [activeTab, runPrompt, runEnhancedPrompt]);
 
   // =============================
+  // Retry (single model) — STREAM via NDJSON
+  // =============================
+  const retryModel = useCallback(
+    async (model: string) => {
+      const retryPrompt = (lastRunPrompt || prompt).trim();
+      if (!retryPrompt) {
+        alert("No prompt to retry. Please enter a prompt first.");
+        return;
+      }
+
+      // Reset just this card
+      setAnswers((prev) => ({
+        ...prev,
+        [model]: { answer: "", error: undefined, latency_ms: 0 },
+      }));
+
+      // Build per-model + global params
+      const perModel = modelParams[model] || {};
+      const enhancedNdjsonPayload: Record<string, unknown> = {
+        messages: [{ role: "user", content: retryPrompt }],
+        models: [model],
+        ...(globalTemp !== undefined ? { temperature: globalTemp } : {}),
+        ...(globalMax !== undefined ? { max_tokens: globalMax } : {}),
+        ...(globalMin !== undefined ? { min_tokens: globalMin } : {}),
+        model_params: {
+          [model]: Object.fromEntries(
+            Object.entries({
+              temperature: perModel.temperature,
+              max_tokens: perModel.max_tokens,
+              min_tokens: perModel.min_tokens,
+            }).filter(([, v]) => v !== undefined)
+          ),
+        },
+      };
+
+      // provider-specific group params by wire
+      const wire = getProviderWire(model);
+      const add = <T extends object>(obj?: T) => (obj && Object.keys(obj).length ? obj : undefined);
+
+      if (wire === "anthropic") {
+        enhancedNdjsonPayload["anthropic_params"] = add({
+          thinking_enabled: perModel.thinking_enabled,
+          thinking_budget_tokens: perModel.thinking_budget_tokens,
+          top_k: perModel.top_k,
+          top_p: perModel.top_p,
+          stop_sequences: perModel.stop_sequences,
+        });
+      } else if (wire === "openai") {
+        enhancedNdjsonPayload["openai_params"] = add({
+          top_p: perModel.top_p,
+          frequency_penalty: perModel.frequency_penalty,
+          presence_penalty: perModel.presence_penalty,
+          seed: perModel.seed,
+        });
+      } else if (wire === "gemini") {
+        enhancedNdjsonPayload["gemini_params"] = add({
+          top_k: perModel.top_k,
+          top_p: perModel.top_p,
+          candidate_count: perModel.candidate_count,
+          safety_settings: perModel.safety_settings,
+        });
+      } else if (wire === "ollama") {
+        enhancedNdjsonPayload["ollama_params"] = add({
+          mirostat: perModel.mirostat,
+          mirostat_eta: perModel.mirostat_eta,
+          mirostat_tau: perModel.mirostat_tau,
+          num_ctx: perModel.num_ctx,
+          repeat_penalty: perModel.repeat_penalty,
+        });
+      }
+
+      const controller = new AbortController();
+      const started = Date.now();
+
+      try {
+        const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced/ndjson`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(enhancedNdjsonPayload),
+          signal: controller.signal,
+        });
+
+        if (!res.ok || !res.body) {
+          const err = (await res.json().catch(() => ({ detail: res.statusText }))) as { detail?: string };
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+
+          buf += decoder.decode(value, { stream: true });
+          const lines = buf.split("\n");
+          buf = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+
+            // StreamEvent shape from your runPrompt path
+            // { type: "chunk", model: string, answer?: string, error?: string, latency_ms: number }
+            // { type: "done" }
+            try {
+              const evt = JSON.parse(trimmed) as {
+                type: "chunk" | "done";
+                model?: string;
+                answer?: string;
+                error?: string;
+                latency_ms?: number;
+              };
+
+              if (evt.type === "chunk" && (!evt.model || evt.model === model)) {
+                setAnswers((prev) => ({
+                  ...prev,
+                  [model]: {
+                    answer: (prev[model]?.answer || "") + (evt.answer || ""),
+                    error: evt.error,
+                    latency_ms: evt.latency_ms ?? (Date.now() - started),
+                  },
+                }));
+              }
+              // ignore 'done' here; we'll set final latency below
+            } catch {
+              // ignore malformed lines
+            }
+          }
+        }
+
+        // Flush tail
+        if (buf.trim()) {
+          try {
+            const tailEvt = JSON.parse(buf.trim()) as {
+              type: "chunk" | "done";
+              model?: string;
+              answer?: string;
+              error?: string;
+              latency_ms?: number;
+            };
+            if (tailEvt.type === "chunk" && (!tailEvt.model || tailEvt.model === model)) {
+              setAnswers((prev) => ({
+                ...prev,
+                [model]: {
+                  answer: (prev[model]?.answer || "") + (tailEvt.answer || ""),
+                  error: tailEvt.error,
+                  latency_ms: tailEvt.latency_ms ?? (Date.now() - started),
+                },
+              }));
+            }
+          } catch {
+            /* noop */
+          }
+        }
+
+        // finalize latency
+        setAnswers((prev) => ({
+          ...prev,
+          [model]: {
+            ...prev[model],
+            latency_ms: Date.now() - started,
+          },
+        }));
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : "Unknown error";
+        setAnswers((prev) => ({
+          ...prev,
+          [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 },
+        }));
+      }
+    },
+    [API_BASE, lastRunPrompt, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderWire]
+  );
+
+
+  const repromptFromResults = useCallback(() => {
+    if (!lastRunPrompt) return;
+    setActiveTab("chat");
+    setPrompt(lastRunPrompt);
+    setTimeout(() => promptRef.current?.focus(), 0);
+  }, [lastRunPrompt]);
+
+  // =============================
   // Keyboard shortcuts
   // =============================
   useEffect(() => {
@@ -811,7 +1022,7 @@ export default function CompareLLMClient(): JSX.Element {
         if (activeModel && interactivePrompt.trim()) {
           void sendInteractiveMessage();
         } else if (activeTab === "chat" && canRun) {
-          void executePrompt();
+          void (useEnhancedAPI ? runEnhancedPrompt() : runPrompt());
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
         }
@@ -830,7 +1041,8 @@ export default function CompareLLMClient(): JSX.Element {
     activeModel,
     interactivePrompt,
     canRun,
-    executePrompt,
+    runPrompt,
+    runEnhancedPrompt,
     performSearch,
     performMultiSearch,
     sendInteractiveMessage,
@@ -887,13 +1099,15 @@ export default function CompareLLMClient(): JSX.Element {
             <div className="space-y-4">
               <label className="text-sm font-medium">Prompt</label>
               <textarea
-                className="w-full rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900"
-                placeholder="Ask your question once. e.g., 'Explain RAG vs fine-tuning for my use case.'"
+                ref={promptRef}
+                className="w-full h-48 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 leading-relaxed"
+                placeholder="Paste or write a long prompt here..."
                 value={prompt}
                 onChange={(evt) => setPrompt(evt.target.value)}
+                spellCheck={true}
               />
 
-              {/* Model list */}
+              {/* Model list header */}
               <div className="flex items-center justify-between">
                 <label className="text-sm font-medium">Models</label>
                 <div className="flex gap-2 text-xs">
@@ -912,7 +1126,16 @@ export default function CompareLLMClient(): JSX.Element {
                 </div>
               </div>
 
-              <ModelList models={allModels} selected={selected} onToggle={toggleModel} brandOf={getProviderType} />
+              {/* Resizable ModelList (uses your updated component with drag handle) */}
+              <ModelList
+                models={allModels}
+                selected={selected}
+                onToggle={toggleModel}
+                brandOf={getProviderType}
+                initialHeightPx={260}
+                minHeightPx={140}
+                maxHeightPx={520}
+              />
 
               {/* Global defaults */}
               <div className="space-y-3 text-sm">
@@ -953,10 +1176,17 @@ export default function CompareLLMClient(): JSX.Element {
                 </div>
               </div>
 
-              {/* Per-model parameters */}
+              {/* DYNAMIC: Per-model parameters render ONLY for selected models */}
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
-                {allModels.map((m) => {
+
+                {selected.length === 0 && (
+                  <div className="text-sm text-zinc-500 dark:text-zinc-400">
+                    Select one or more models above to configure their parameters.
+                  </div>
+                )}
+
+                {selected.map((m) => {
                   const brand = getProviderType(m);
                   const wire = getProviderWire(m);
                   const isExpanded = expandedModels.has(m);
@@ -970,9 +1200,10 @@ export default function CompareLLMClient(): JSX.Element {
                       <div
                         className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
                         onClick={() => toggleModelExpansion(m)}
+                        title={`Configure ${m}`}
                       >
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm">{m}</span>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="font-mono text-sm truncate">{m}</span>
                           {hasParams && (
                             <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200">
                               configured
@@ -1003,12 +1234,15 @@ export default function CompareLLMClient(): JSX.Element {
                                 min={0}
                                 max={2}
                                 value={modelParams[m]?.temperature ?? ""}
-                                placeholder={`↳ ${globalTemp ?? "backend default"}`}
+                                placeholder="↳ global / backend default"
                                 onChange={(e) =>
-                                  updateParam(m, {
-                                    ...modelParams[m],
-                                    temperature: e.target.value ? Number(e.target.value) : undefined,
-                                  })
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: {
+                                      ...prev[m],
+                                      temperature: e.target.value ? Number(e.target.value) : undefined,
+                                    },
+                                  }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
@@ -1019,12 +1253,15 @@ export default function CompareLLMClient(): JSX.Element {
                                 type="number"
                                 min={1}
                                 value={modelParams[m]?.max_tokens ?? ""}
-                                placeholder={`↳ ${globalMax ?? "backend default"}`}
+                                placeholder="↳ global / default"
                                 onChange={(e) =>
-                                  updateParam(m, {
-                                    ...modelParams[m],
-                                    max_tokens: e.target.value ? Number(e.target.value) : undefined,
-                                  })
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: {
+                                      ...prev[m],
+                                      max_tokens: e.target.value ? Number(e.target.value) : undefined,
+                                    },
+                                  }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
@@ -1035,12 +1272,15 @@ export default function CompareLLMClient(): JSX.Element {
                                 type="number"
                                 min={1}
                                 value={modelParams[m]?.min_tokens ?? ""}
-                                placeholder={globalMin ? `↳ ${globalMin}` : "optional"}
+                                placeholder="optional"
                                 onChange={(e) =>
-                                  updateParam(m, {
-                                    ...modelParams[m],
-                                    min_tokens: e.target.value ? Number(e.target.value) : undefined,
-                                  })
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: {
+                                      ...prev[m],
+                                      min_tokens: e.target.value ? Number(e.target.value) : undefined,
+                                    },
+                                  }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
@@ -1051,13 +1291,23 @@ export default function CompareLLMClient(): JSX.Element {
                             model={m}
                             providerWire={wire}
                             params={modelParams[m] || {}}
-                            onUpdate={(params) => updateParam(m, params)}
+                            onUpdate={(params) =>
+                              setModelParams((prev) => ({
+                                ...prev,
+                                [m]: params,
+                              }))
+                            }
                           />
 
                           {hasParams && (
                             <div className="mt-3 pt-3 border-t border-orange-200 dark:border-orange-700">
                               <button
-                                onClick={() => updateParam(m, {})}
+                                onClick={() =>
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: {},
+                                  }))
+                                }
                                 className="text-xs px-2 py-1 rounded-md border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
                               >
                                 Clear all parameters
@@ -1090,14 +1340,16 @@ export default function CompareLLMClient(): JSX.Element {
               isRunning={isRunning}
               brandOf={getProviderType}
               onOpenModel={(m) => openModelChat(m)}
-              onRemoveModel={handleRemoveModel} // 👈 add this
+              onRemoveModel={handleRemoveModel}
+              onRetryModel={retryModel}
+              onReprompt={repromptFromResults}
             />
             <div ref={bottomRef} />
           </section>
         </main>
       )}
 
-      {/* Embeddings Tab (left/right rails) */}
+      {/* Embeddings Tab */}
       {activeTab === "embedding" && (
         <main className="grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-6 items-start">
           {/* Left rail */}
