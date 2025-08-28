@@ -192,23 +192,23 @@ Visit [http://localhost:3000](http://localhost:3000)
 
 ### 1. Prompt Input & Multi-Model Comparison
 
-![Prompt Input](./prompt_in.png)
+![Prompt Input](screenshots/prompt_in.png)
 
 ### 2. Model Completion Results
 
-![Completion Results](./completion.png)
+![Completion Results](screenshots/completion.png)
 
 ### 3. Interactive Single Model Chat
 
-![Single Model Interaction](./singleModelInteraction.png)
+![Single Model Interaction](screenshots/singleModelInteraction.png)
 
 ### 4. Side-by-Side Embedding Comparison
 
-![Side-by-Side Embedding Comparison](./side_by_side_embed.png)
+![Side-by-Side Embedding Comparison](screenshots/side_by_side_embed.png)
 
 ### 5. Single-Model Embedding Search
 
-![Single-Model Embedding Search](./single_embed_search.png)
+![Single-Model Embedding Search](screenshots/single_embed_search.png)
 
 ---
 
