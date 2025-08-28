@@ -1,7 +1,6 @@
 # 🔮 CompareLLM
 
-A **multi-provider AI playground** for running, comparing, and embedding across different LLMs in real time.
-Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for experimentation with Anthropic, OpenAI, DeepSeek, Ollama, Gemini, Cerebras, Cohere, and more.
+A **multi-provider AI playground** for running, comparing, and embedding across different LLMs in real time. Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for experimentation with Anthropic, OpenAI, DeepSeek, Ollama, Gemini, Cerebras, Cohere, and more.
 
 ---
 
@@ -28,6 +27,7 @@ Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for exper
 
   * **Anthropic (Claude)**, **OpenAI (GPT-5, GPT-4o)**, **DeepSeek**, **Ollama local models**, **Google Gemini**, **Cerebras**, **Cohere**, **Voyage AI**
   * Embedding models across providers for evaluation & retrieval
+  * Users can easily extend support: just add the model or embedding model name in `config/models.yaml` under the relevant provider section.
 
 * **Enterprise-Ready Architecture**
 
@@ -135,6 +135,36 @@ Visit [http://localhost:3000](http://localhost:3000)
 1. Upload JSON documents with IDs and text
 2. Run **single-model search** or **multi-model comparison**
 3. Inspect cosine similarity, metadata, and raw JSON results
+
+📥 **Expected Dataset Format (JSON):**
+
+```json
+[
+  {
+    "ticker": "AAPL",
+    "title": "Apple Inc. Teases New Product Launch with AI and In-House Modem",
+    "link": "https://finance.yahoo.com/news/apple-inc-aapl-teases-product-182528020.html",
+    "summary": "Apple plans to launch a new product on Feb. 19 featuring Apple Intelligence and an in-house modem chip."
+  },
+  {
+    "ticker": "MSFT",
+    "title": "Microsoft-Backed OpenAI Introduces SWE-Lancer Benchmark",
+    "link": "https://finance.yahoo.com/news/microsoft-backed-openai-introduces-swe-182754256.html",
+    "summary": "OpenAI, supported by Microsoft, introduces SWE-Lancer benchmark with 1,400+ tasks for evaluating AI performance."
+  }
+]
+```
+
+**Dataset Structure Expectations**
+
+* Each dataset must be a list of JSON objects.
+* Each object can contain metadata fields (e.g., `ticker`, `title`, `link`).
+* One of the keys must hold the text you want to embed (e.g., `summary`).
+
+**Frontend Usage**
+
+* When uploading a dataset, the **Embed Text** field must be set to the key that contains the text you want embedded (e.g., `summary`).
+* If multiple keys exist, only the selected one will be used for embeddings.
 
 ---
 
