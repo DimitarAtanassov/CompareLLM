@@ -43,15 +43,6 @@ Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for exper
 * **Backend:** FastAPI, Python 3.11
 * **Infra:** Docker Compose (multi-container), Node, Yarn
 * **Providers:** Anthropic, OpenAI, DeepSeek, Gemini, Ollama, Cerebras, Cohere, Voyage
-
----
-
-## 🚀 Quick Start
-
-Perfect 🔥 — I’ll update the **Quick Start** section of your README to include an explicit step about editing `.env` with those API keys and Ollama config. This makes onboarding crystal clear for any developer or recruiter browsing the repo.
-
-Here’s the updated section:
-
 ---
 
 ## 🚀 Quick Start
