@@ -115,14 +115,6 @@ CEREBRAS_API_KEY=csk-...
 # (ollama serve inside the container or on host)
 ```
 
-⚠️ **Note:**
-
-* Replace placeholder keys with your real provider API keys.
-* Adjust Ollama platform under `docker-compose.yml` depending on your system:
-
-  * `linux/arm64/v8` → Apple Silicon (M1/M2/M3)
-  * `linux/amd64` → Intel/AMD
-
 ### 3. Run with Docker
 
 ```bash
