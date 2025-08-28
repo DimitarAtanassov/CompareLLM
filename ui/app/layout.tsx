@@ -1,19 +1,20 @@
+// app/layout.tsx
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
   subsets: ["latin"],
+  variable: "--font-sans",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
+  variable: "--font-mono",
 });
 
 export const metadata: Metadata = {
-  title: "Multi-LLM Prompt Runner",
+  title: "CompareLLM",
   description: "Prompt multiple LLMs at once and compare answers side-by-side.",
 };
 
@@ -22,7 +23,9 @@ export default function RootLayout({
 }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
+      <body
+        className={`${inter.className} ${jetbrainsMono.variable} antialiased bg-white text-gray-900 dark:bg-zinc-900 dark:text-zinc-100`}
+      >
         {children}
       </body>
     </html>

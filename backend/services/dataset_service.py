@@ -1,9 +1,10 @@
+#app/backend/services/dataset_service.py
 import time
 from typing import Any, Dict, List
 
 from config.logging import log_event
 from core.exceptions import DatasetNotFoundError, ModelNotFoundError, ValidationError
-from models.requests import DatasetUploadRequest
+from models.enhanced_requests import DatasetUploadRequest
 from models.responses import DatasetUploadResponse, DatasetListResponse
 from providers.registry import ModelRegistry
 from services.embedding_service import EmbeddingService

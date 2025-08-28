@@ -1,8 +1,10 @@
 services:
+  # Ollama Service (for local models)
   ollama:
     image: ollama/ollama:latest
-    platform: linux/arm64/v8
-    ports: ["11434:11434"]
+    platform: linux/arm64/v8  # Change to linux/amd64 for Intel/AMD systems
+    ports: 
+      - "11434:11434"
     volumes:
       - ollama:/root/.ollama
     environment:
@@ -16,7 +18,10 @@ services:
       timeout: 3s
       retries: 30
     restart: unless-stopped
+    networks:
+      - app-network
 
+  # Model Puller Service
   model-puller:
     image: alpine:3.20
     depends_on:
@@ -33,33 +38,76 @@ services:
       - ./scripts/pull-models.sh:/pull-models.sh:ro
     entrypoint: ["/bin/sh", "/pull-models.sh"]
     restart: "no"
+    networks:
+      - app-network
 
+  # Backend API Service
   api:
     build: ./backend
     environment:
+      # Configuration
       MODELS_CONFIG: /config/models.yaml
+      MODELS_CONFIG_PATH: /config/models.yaml
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HOST: 0.0.0.0
+      PORT: 8080
+      
       # Chat model API keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-${GOOGLE_API_KEY}}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
       # Embedding model API keys
       COHERE_API_KEY: ${COHERE_API_KEY}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY}
+      
+      # Ollama connection
+      OLLAMA_HOST: http://ollama:11434
     volumes:
       - ./config:/config:ro
-    ports: ["8080:8080"]
+      - ./backend/logs:/app/logs
+    ports: 
+      - "8080:8080"
     depends_on:
       model-puller:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     restart: unless-stopped
+    networks:
+      - app-network
 
+  # Frontend UI Service
   ui:
     build: ./ui
     environment:
-      NEXT_PUBLIC_API_BASE_URL: /backend   # <- matches rewrite
-    ports: ["3000:3000"]
-    depends_on: [api]
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8080   # <- matches rewrite
+      NEXT_PUBLIC_API_URL: http://api:8080
+      NODE_ENV: production
+    ports: 
+      - "3000:3000"
+    depends_on: 
+      - api
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge
 
 volumes:
   ollama:
+    driver: local

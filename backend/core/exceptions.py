@@ -1,3 +1,4 @@
+# app/backend/core/exceptions.py
 from typing import Any, Dict, Optional
 
 

@@ -2,6 +2,7 @@ import asyncio
 from typing import Any, Dict, List, Optional
 import httpx
 import json
+import os
 
 from core.exceptions import ProviderError
 from providers.base import Provider
@@ -31,6 +32,12 @@ class ChatAdapter:
     ) -> str:
         """Generate chat completion using the appropriate provider."""
         try:
+            # Log the request details for debugging
+            print(f"🔍 Chat request - Provider: {provider.name}, Model: {model}")
+            print(f"🔍 API Key present: {bool(provider.api_key)}")
+            print(f"🔍 Base URL: {provider.base_url}")
+            print(f"🔍 Messages count: {len(messages)}")
+            
             if provider.type == "openai":
                 return await self._openai_chat(
                     provider, model, messages, temperature, max_tokens, timeout_s
@@ -43,9 +50,14 @@ class ChatAdapter:
                 return await self._anthropic_chat(
                     provider, model, messages, temperature, max_tokens, min_tokens, timeout_s
                 )
+            elif provider.type == "ollama":
+                return await self._ollama_chat(
+                    provider, model, messages, temperature, max_tokens, timeout_s
+                )
             else:
                 raise ProviderError(provider.name, f"Unsupported provider type: {provider.type}")
         except Exception as e:
+            print(f"❌ Chat error - Provider: {provider.name}, Model: {model}, Error: {str(e)}")
             if isinstance(e, ProviderError):
                 raise
             raise ProviderError(provider.name, str(e))
@@ -63,8 +75,13 @@ class ChatAdapter:
         headers = dict(provider.headers or {})
         if provider.api_key:
             headers["Authorization"] = f"Bearer {provider.api_key}"
+        else:
+            print(f"⚠️  No API key found for provider {provider.name}")
+            print(f"⚠️  Looking for env var: {provider.api_key_env}")
+            print(f"⚠️  Env var value: {os.getenv(provider.api_key_env) if provider.api_key_env else 'Not set'}")
         
         url = f"{provider.base_url}/chat/completions"
+        print(f"🌐 Request URL: {url}")
         
         def build_payload(use_completion_tokens: bool, include_temperature: bool):
             body = {
@@ -83,22 +100,37 @@ class ChatAdapter:
             use_completion = False
             include_temp = True
             
+            payload = build_payload(use_completion, include_temp)
+            print(f"📤 Request payload: {json.dumps(payload, indent=2)}")
+            
             # Initial attempt
             r = await client.post(
-                url, headers=headers, json=build_payload(use_completion, include_temp)
+                url, headers=headers, json=payload
             )
             
+            print(f"📥 Response status: {r.status_code}")
+            print(f"📥 Response headers: {dict(r.headers)}")
+            
             # Handle parameter compatibility issues
-            for _ in range(2):
+            for attempt in range(3):
                 if r.status_code != 400:
                     break
                 
                 try:
                     err = r.json()
+                    print(f"🔍 Error response: {json.dumps(err, indent=2)}")
                     meta = err.get("error", err)
                     msg = str(meta.get("message", meta))
-                except Exception:
-                    msg = ""
+                    
+                    # Check for specific model-related errors
+                    if "model" in msg.lower() and any(x in msg.lower() for x in ["not found", "does not exist", "unknown", "invalid"]):
+                        print(f"❌ Model '{model}' is not valid for OpenAI API")
+                        print(f"💡 Valid OpenAI models include: gpt-4o, gpt-4, gpt-3.5-turbo")
+                        raise RuntimeError(f"Invalid model '{model}'. Available models: gpt-4o, gpt-4, gpt-3.5-turbo")
+                    
+                except Exception as parse_error:
+                    msg = r.text
+                    print(f"🔍 Raw error response: {msg}")
                 
                 need_completion = ("max_tokens" in msg and "max_completion_tokens" in msg)
                 temp_unsupported = ("temperature" in msg and "supported" in msg)
@@ -108,16 +140,68 @@ class ChatAdapter:
                 
                 if need_completion:
                     use_completion = True
+                    print("🔄 Retrying with max_completion_tokens")
                 if temp_unsupported:
                     include_temp = False
+                    print("🔄 Retrying without temperature")
                 
+                payload = build_payload(use_completion, include_temp)
                 r = await client.post(
-                    url, headers=headers, json=build_payload(use_completion, include_temp)
+                    url, headers=headers, json=payload
                 )
+                print(f"📥 Retry response status: {r.status_code}")
             
+            # Check if we got an error response
+            if not r.is_success:
+                error_text = r.text
+                print(f"❌ Final error response: {error_text}")
+                try:
+                    error_json = r.json()
+                    if "error" in error_json:
+                        error_msg = error_json["error"].get("message", error_text)
+                        # Check if it's a model error
+                        if "model" in error_msg.lower():
+                            raise RuntimeError(f"Model error: {error_msg}. Note: GPT-5 doesn't exist yet. Use gpt-4o, gpt-4, or gpt-3.5-turbo")
+                    else:
+                        error_msg = error_json.get("message", error_text)
+                except:
+                    error_msg = error_text
+                
+                self._raise_for_status(r)
+            
+            data = r.json()
+            print(f"✅ Success response keys: {list(data.keys())}")
+            return data["choices"][0]["message"]["content"]
+    
+    async def _ollama_chat(
+        self, 
+        provider: Provider, 
+        model: str, 
+        messages: List[Dict[str, str]], 
+        temperature: float, 
+        max_tokens: int, 
+        timeout_s: int
+    ) -> str:
+        """Handle Ollama chat completion."""
+        url = f"{provider.base_url}/api/chat"
+        
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": temperature,
+                "num_predict": max_tokens
+            }
+        }
+        
+        headers = dict(provider.headers or {})
+        
+        async with httpx.AsyncClient(timeout=timeout_s) as client:
+            r = await client.post(url, headers=headers, json=payload)
             self._raise_for_status(r)
             data = r.json()
-            return data["choices"][0]["message"]["content"]
+            return data["message"]["content"]
     
     async def _gemini_chat(
         self, 
@@ -226,5 +310,5 @@ class ChatAdapter:
                 j = response.json()
                 detail = j.get("error", j.get("message", "")) or str(j)
             except Exception:
-                pass
+                detail = response.text
             raise RuntimeError(f"{response.status_code} {response.reason_phrase}: {detail}") from e

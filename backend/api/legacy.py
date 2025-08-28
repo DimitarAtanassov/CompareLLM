@@ -10,7 +10,7 @@ from core.dependencies import (
     get_chat_service, get_embedding_service, 
     get_dataset_service, get_search_service, get_model_registry
 )
-from models.requests import ChatRequest, EmbeddingRequest, SearchRequest, DatasetUploadRequest
+from models.DEPRECATED_requests import ChatRequest, EmbeddingRequest, SearchRequest, DatasetUploadRequest
 from models.responses import ProvidersResponse, EmbeddingModelsResponse
 from config.logging import log_event
 

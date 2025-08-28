@@ -1,74 +1,65 @@
-# LLMCompare
-A prompting and embedding tool for exploring and comparing LLMs.
+# 🔮 CompareLLM
 
-LLMCompare is a playground where you can:
-- Send the same text prompt to multiple models (OpenAI, Anthropic, Gemini, Ollama, vLLM, etc.) and watch their responses stream back in real time.  
-- Generate **embeddings** across multiple providers (OpenAI, Voyage AI, Cohere, Ollama, etc.) from the same input, making it easy to run side-by-side
----
-
-## 🚀 Features
-
-* **Multi-Provider Support**: OpenAI, Anthropic, Gemini, DeepSeek, Ollama, vLLM, and more.
-* **Embeddings Support**: End users can now generate embeddings from multiple providers (OpenAI, Voyage AI, open-source backends, etc.) in parallel for the same input, enabling side-by-side comparison and cosine similarity search.
-* **Streaming Responses**: Real-time NDJSON streaming.
-* **Frontend Playground**: Next.js + Tailwind, clean and responsive.
-* **Configurable**: Easily add/remove models via `models.yaml`.
-* **Dockerized Setup**: Run everything locally in one command.
+A **multi-provider AI playground** for running, comparing, and embedding across different LLMs in real time.
+Built with **Next.js (frontend)** + **FastAPI (backend)** + **Docker** for experimentation with Anthropic, OpenAI, DeepSeek, Ollama, Gemini, Cerebras, Cohere, and more.
 
 ---
 
-## 🖼 Demo
+## ✨ Features
 
-Here’s a quick look at AskManyLLMs in action:
-### Prompt Testing:
-#### Home screen
-![Home](./screenshots/home.png)
+* **Multi-Model Chat Comparison**
 
-#### Model controls & overrides
-![Controls](./screenshots/controls.png)
+  * Run prompts across multiple LLMs in parallel
+  * Streaming NDJSON responses for real-time output
+  * Retry, per-model chat continuation, fullscreen & resizable modals
 
-#### Sending prompts (text + multimodal)
-![User Input](./screenshots/user_in.png)
+* **Embeddings & Semantic Search**
 
-#### Loading state
-![Loading](./screenshots/loading.png)
+  * Upload datasets (JSON) and embed with multiple models simultaneously
+  * Single-model or multi-model similarity search & side-by-side comparison
+  * Powered by **pgvector** for fast vector search
 
-#### Results streaming back
-![Response 1](./screenshots/res.png)
+* **Rich Frontend UX**
 
-### Semantic Search testing (embeddings + cosine similarity search)
-#### Embedding Home
-![Embedding Home](./screenshots/embedding_home.png)
-#### Load Embedding Data
-![Load Embedding Data](./screenshots/load_embedding_data.png)
-#### Select Embedding Models
-![Select Embedding Models](./screenshots/select_embedding_models.png)
-#### Semantic Search Input
-![Semantic Search Input](./screenshots/semantic_search_in_1.png)
-#### Semantic Search Results
-![Semantic Search Res](./screenshots/semantic_search_res_1.png)
-#### Semantic Search Input 2
-![Semantic Search Input 2](./screenshots/semantic_search_in_2.png)
-#### Semantic Search Results 2
-![Semantic Search Res 2](./screenshots/semantic_search_res_2.png)
-#### Manage Loaded Data
-![Manage Loaded Data](./screenshots/manage_loaded_data.png)
+  * Tailwind + shadcn components, resizable panels, draggable lists
+  * Dark mode, dynamic provider badges, Markdown rendering
+
+* **Flexible Provider Support**
+
+  * **Anthropic (Claude)**, **OpenAI (GPT-5, GPT-4o)**, **DeepSeek**, **Ollama local models**, **Google Gemini**, **Cerebras**, **Cohere**, **Voyage AI**
+  * Embedding models across providers for evaluation & retrieval
+
+* **Enterprise-Ready Architecture**
+
+  * Modular adapters for each provider
+  * Configurable via `models.yaml`
+  * Dockerized for reproducibility & team onboarding
+
 ---
 
-## ⚡ Quick Start
+## 🛠️ Tech Stack
 
-### 1. Clone the repo
+* **Frontend:** Next.js 14, React, TailwindCSS, shadcn/ui
+* **Backend:** FastAPI, Python 3.11
+* **Infra:** Docker Compose (multi-container), Node, Yarn
+* **Providers:** Anthropic, OpenAI, DeepSeek, Gemini, Ollama, Cerebras, Cohere, Voyage
+
+---
+
+## 🚀 Quick Start
+
+### 1. Clone & Configure
 
 ```bash
-git clone https://github.com/DimitarAtanassov/LLMCompare.git
-cd LLMCompare
+git clone https://github.com/your-org/askmanyllms.git
+cd askmanyllms
 ```
 
-### 2. Set up environment variables
+### 2. Edit `.env`
 
-Copy the example file and update it with your own API keys:
+Open the newly created `.env` file and adjust the values to match your API keys and system setup:
 
-```bash
+```env
 # ======================
 # Core API Config
 # ======================
@@ -77,58 +68,42 @@ LOG_LEVEL=INFO
 
 # ======================
 # OpenAI (Chat + Embeddings)
-# ======================
-# Replace with your OpenAI API key (format: sk-proj-...)
-OPENAI_API_KEY=
+OPENAI_API_KEY=sk-proj-...
 
 # ======================
 # DeepSeek (Chat)
-# ======================
-# Replace with your DeepSeek API key (format: sk-...)
-DEEPSEEK_API_KEY=
+DEEPSEEK_API_KEY=sk-...
 
 # ======================
 # Google Gemini (Chat)
-# ======================
-# Replace with your Google API key (format: AIza...)
-GOOGLE_API_KEY=
+GOOGLE_API_KEY=AIza...
 
 # ======================
 # Anthropic Claude (Chat)
-# ======================
-# Replace with your Anthropic API key (format: sk-ant-...)
-ANTHROPIC_API_KEY=
+ANTHROPIC_API_KEY=sk-ant-...
 
 # ======================
-# Voyage AI (Embeddings - Premium)
-# ======================
-# Replace with your Voyage AI key (format: pa-...)
-VOYAGE_API_KEY=
+# Voyage AI (Embeddings)
+VOYAGE_API_KEY=pa-...
 
 # ======================
 # Cohere (Chat + Embeddings)
-# ======================
-# Replace with your Cohere API key if available
-COHERE_API_KEY=
+COHERE_API_KEY=...
 
 # ======================
-# Ollama (Local Models - Chat + Embeddings)
-# ======================
-# No API key needed for local models, just ensure Ollama is running
-# Example: ollama serve (inside container or host)
-
+# Ollama (Local Models - no key required)
+# Ensure Ollama runs inside container or host
 ```
 
-Edit `.env` and fill in your keys:
+⚠️ **Note:**
 
-* `OPENAI_API_KEY` → [Get here](https://platform.openai.com/)
-* `DEEPSEEK_API_KEY` → [Get here](https://platform.deepseek.com/)
-* `GOOGLE_API_KEY` (Gemini) → [Get here](https://aistudio.google.com/app/apikey)
-* `ANTHROPIC_API_KEY` → [Get here](https://console.anthropic.com/)
+* Replace placeholder keys with your real provider API keys.
+* Adjust Ollama platform under `docker-compose.yml` depending on your system:
 
-Ollama requires **no API key** — just ensure it’s installed and running locally.
+  * `linux/arm64/v8` → Apple Silicon (M1/M2/M3)
+  * `linux/amd64` → Intel/AMD
 
-### 3. Start with Docker
+### 3. Run with Docker
 
 ```bash
 docker compose up --build
@@ -136,28 +111,77 @@ docker compose up --build
 
 This will start:
 
-* FastAPI backend (NDJSON streaming API)
-* Next.js frontend (interactive UI)
-* Any configured Ollama/vLLM containers
+* `api` → FastAPI backend
+* `ui` → Next.js frontend
+* `ollama` → local LLM runner (if enabled)
+* `model-puller` → automatically pulls Ollama models from `models.yaml`
 
-### 4. Visit the playground
+### 4. Open the UI
 
-Frontend will be available at:
-👉 [http://localhost:3000](http://localhost:3000)
-
----
-
-## 🛠 Tech Stack
-
-* **Backend**: FastAPI + Python
-* **Frontend**: Next.js + TailwindCSS
-* **Infra**: Docker Compose
-* **Streaming**: NDJSON over HTTP
+Visit [http://localhost:3000](http://localhost:3000)
 
 ---
 
-## 🎯 Why?
+## 📊 Example Workflows
 
-Prompting across models should be easy, fun, and visual. AskManyLLMs makes it possible to experiment with text prompts and see how models respond differently — side by side.
+### Chat
+
+1. Select multiple models in the **Model List**
+2. Enter a prompt and hit **Run**
+3. Compare responses side-by-side, expand any model, or open interactive chat
+
+### Embeddings
+
+1. Upload JSON documents with IDs and text
+2. Run **single-model search** or **multi-model comparison**
+3. Inspect cosine similarity, metadata, and raw JSON results
 
 ---
+
+## 📸 Screenshots
+
+### 1. Prompt Input & Multi-Model Comparison
+
+![Prompt Input](./prompt_in.png)
+
+### 2. Model Completion Results
+
+![Completion Results](./completion.png)
+
+### 3. Interactive Single Model Chat
+
+![Single Model Interaction](./singleModelInteraction.png)
+
+### 4. Side-by-Side Embedding Comparison
+
+![Side-by-Side Embedding Comparison](./side_by_side_embed.png)
+
+### 5. Single-Model Embedding Search
+
+![Single-Model Embedding Search](./single_embed_search.png)
+
+---
+
+## 🧩 Project Structure
+
+```
+backend/
+  main.py              # FastAPI entry
+  adapters/            # Provider adapters (OpenAI, Anthropic, etc.)
+  services/            # Chat + embedding services
+  config/              # models.yaml
+frontend/
+  app/components/      # React components (Chat, Embeddings, Modals)
+  lib/                 # Types & utils
+docker-compose.yml     # Multi-service stack
+```
+
+---
+
+## 📜 License
+
+MIT License © 2025 AskManyLLMs Contributors
+
+---
+
+⚡ Ready for experimentation, benchmarking, and enterprise AI workflows.

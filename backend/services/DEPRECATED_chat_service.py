@@ -4,10 +4,10 @@ from typing import Any, Dict, List, Optional
 
 from config.logging import log_event
 from core.exceptions import ModelNotFoundError, ProviderError
-from models.requests import ChatRequest
+from models.DEPRECATED_requests import ChatRequest
 from models.responses import ChatResponse, ModelAnswer
 from providers.registry import ModelRegistry
-from providers.adapters.chat_adapter import ChatAdapter
+from providers.adapters.DEPRECATED_chat_adapter import ChatAdapter
 
 
 class ChatService:
@@ -19,10 +19,8 @@ class ChatService:
     
     async def chat_completion(self, request: ChatRequest) -> ChatResponse:
         """Handle chat completion for multiple models."""
-        messages = [
-            {"role": "system", "content": "Answer clearly and concisely."},
-            {"role": "user", "content": request.prompt},
-        ]
+        # Convert request to standardized messages format
+        messages = request.to_messages()
         
         chosen_models = request.models or list(self.registry.model_map.keys())
         self._validate_models(chosen_models)
@@ -38,11 +36,19 @@ class ChatService:
             else:
                 answers[model] = ModelAnswer(answer=result)
         
+        # For response, use the last user message as the "prompt" for backwards compatibility
+        display_prompt = self._extract_display_prompt(messages)
+        
         return ChatResponse(
-            prompt=request.prompt,
+            prompt=display_prompt,
             models=chosen_models,
             answers=answers
         )
+    
+    def _extract_display_prompt(self, messages: List[Dict[str, str]]) -> str:
+        """Extract the last user message for display purposes."""
+        user_messages = [msg["content"] for msg in messages if msg["role"] == "user"]
+        return user_messages[-1] if user_messages else "No user message found"
     
     async def _process_single_model(
         self, 
@@ -59,6 +65,13 @@ class ChatService:
         max_tokens = model_params.get("max_tokens", request.max_tokens or 8192)
         min_tokens = model_params.get("min_tokens", request.min_tokens)
         
+        # Log the conversation context (just first and last messages for brevity)
+        log_context = {
+            "message_count": len(messages),
+            "first_message": messages[0]["content"][:50] + "..." if messages else None,
+            "last_message": messages[-1]["content"][:50] + "..." if messages else None
+        }
+        
         log_event(
             "chat.start",
             provider=provider.name,
@@ -66,6 +79,7 @@ class ChatService:
             temperature=temperature,
             max_tokens=max_tokens,
             min_tokens=min_tokens,
+            context=log_context,
         )
         
         start_time = time.perf_counter()
@@ -88,6 +102,7 @@ class ChatService:
                 ok=True,
                 duration_ms=duration_ms,
                 answer_chars=len(result or ""),
+                context=log_context,
             )
             
             return result
@@ -101,6 +116,7 @@ class ChatService:
                 ok=False,
                 duration_ms=duration_ms,
                 error=str(e),
+                context=log_context,
             )
             raise ProviderError(provider.name, str(e))
     

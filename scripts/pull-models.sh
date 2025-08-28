@@ -16,21 +16,15 @@ if [ "${ENABLE_AUTO_PULL:-true}" != "true" ]; then
 fi
 
 # sanity
-ls -la "$(dirname "$MODELS_CONFIG")" || true
 if [ ! -f "$MODELS_CONFIG" ]; then
   echo "ERROR: Config not found at $MODELS_CONFIG"
   exit 1
 fi
 
 echo "Reading models from $MODELS_CONFIG ..."
-echo "----- BEGIN models.yaml -----"
-sed -n '1,200p' "$MODELS_CONFIG" || true
-echo "-----  END models.yaml  -----"
 
-# Get chat models under providers.ollama.models[]
+# Get all models
 CHAT_MODELS="$(yq -r '.providers.ollama.models // [] | .[]' < "$MODELS_CONFIG" || true)"
-
-# Get embedding models under providers.ollama.embedding_models[]
 EMBEDDING_MODELS="$(yq -r '.providers.ollama.embedding_models // [] | .[]' < "$MODELS_CONFIG" || true)"
 
 # Combine all models
@@ -52,42 +46,72 @@ if [ -z "$ALL_MODELS" ]; then
   exit 0
 fi
 
-echo "Will pull chat models:"
-if [ -n "$CHAT_MODELS" ]; then
-  echo "$CHAT_MODELS" | sed 's/^/  - /'
-else
-  echo "  (none)"
+# Wait for Ollama API to be available
+echo "🔄 Waiting for Ollama API..."
+WAIT_RETRIES=60  # Wait up to 2 minutes
+WAIT_SLEEP=2
+i=1
+OLLAMA_READY=false
+
+until [ $i -gt "$WAIT_RETRIES" ]; do
+  if curl -fsS "$OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+    OLLAMA_READY=true
+    echo "✅ Ollama API is ready!"
+    break
+  fi
+  echo "⏳ Waiting for Ollama API... ($i/$WAIT_RETRIES)"
+  i=$((i+1))
+  sleep "$WAIT_SLEEP"
+done
+
+if [ "$OLLAMA_READY" = "false" ]; then
+  echo "❌ Ollama API not ready. Falling back to pull all models."
 fi
 
-echo "Will pull embedding models:"
-if [ -n "$EMBEDDING_MODELS" ]; then
-  echo "$EMBEDDING_MODELS" | sed 's/^/  - /'
-else
-  echo "  (none)"
-fi
+# Simple function to check if model exists (with error handling)
+model_exists() {
+  local model_name="$1"
+  if [ "$OLLAMA_READY" = "false" ]; then
+    return 1  # Assume it doesn't exist if we can't check
+  fi
+  
+  # Try to get the model list and check if our model is in it
+  EXISTING_LIST=$(curl -fsS "$OLLAMA_HOST/api/tags" 2>/dev/null | jq -r '.models[]?.name // empty' 2>/dev/null || echo "")
+  echo "$EXISTING_LIST" | grep -q "^${model_name}$" 2>/dev/null
+}
 
 RETRIES="${PULL_RETRIES:-5}"
 SLEEP="${PULL_SLEEP_SECS:-3}"
 
-echo "Starting model pulls..."
+echo ""
+echo "📋 Processing models:"
+echo "$ALL_MODELS" | sed 's/^/  - /'
+
+echo ""
+echo "🔍 Checking and pulling models..."
 echo "$ALL_MODELS" | while IFS= read -r m; do
   if [ -n "$m" ]; then
-    echo "==> Pull $m"
-    i=1
-    until [ $i -gt "$RETRIES" ]; do
-      if curl -fsS -X POST "$OLLAMA_HOST/api/pull" \
-        -H 'Content-Type: application/json' \
-        -d "{\"name\":\"$m\"}" >/dev/null; then
-        echo "Pulled $m"
-        break
+    if model_exists "$m"; then
+      echo "✅ $m (already exists, skipping)"
+    else
+      echo "📥 $m (pulling...)"
+      i=1
+      until [ $i -gt "$RETRIES" ]; do
+        if curl -fsS -X POST "$OLLAMA_HOST/api/pull" \
+          -H 'Content-Type: application/json' \
+          -d "{\"name\":\"$m\"}" >/dev/null 2>&1; then
+          echo "✅ $m (pulled successfully)"
+          break
+        fi
+        echo "⏳ retry $i/$RETRIES for $m in ${SLEEP}s..."
+        i=$((i+1)); sleep "$SLEEP"
+      done
+      if [ $i -gt "$RETRIES" ]; then
+        echo "❌ FAILED to pull $m after $RETRIES attempts" >&2
       fi
-      echo "retry $i/$RETRIES for $m in ${SLEEP}s..."
-      i=$((i+1)); sleep "$SLEEP"
-    done
-    if [ $i -gt "$RETRIES" ]; then
-      echo "FAILED to pull $m after $RETRIES attempts" >&2
     fi
   fi
 done
 
-echo "Pull phase complete."
+echo ""
+echo "🎉 Pull phase complete."
