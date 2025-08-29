@@ -219,9 +219,6 @@ class EmbeddingAdapter:
                 out.append([float(x) for x in ok_vec])
 
             return out
-
-
-
     
     def _raise_for_status(self, response: httpx.Response) -> None:
         """Raise appropriate exception for HTTP errors."""
