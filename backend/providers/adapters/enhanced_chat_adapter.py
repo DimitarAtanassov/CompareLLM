@@ -4,6 +4,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 import httpx
 import json
 
+from providers.adapters.langchain_chat_adapter import LCChatAdapter
 from core.exceptions import ProviderError
 from providers.base import Provider
 from providers.anthropic_params import AnthropicParameters, create_anthropic_params, get_model_config
@@ -35,63 +36,84 @@ def _get_wire(provider: Provider) -> str:
 class EnhancedChatAdapter:
     """Enhanced adapter for chat completion with provider-specific parameter support."""
 
+    def __init__(self):
+        self.lc = LCChatAdapter()
+    
+    # async def chat_completion(
+    #     self,
+    #     provider: Provider,
+    #     model: str,
+    #     messages: List[Dict[str, str]],
+    #     temperature: Optional[float] = None,
+    #     max_tokens: Optional[int] = None,
+    #     min_tokens: Optional[int] = None,  # Anthropic-only
+    #     timeout_s: int = 180,
+    #     provider_params: Optional[Dict[str, Any]] = None,
+    # ) -> str:
+    #     """
+    #     Generate chat completion using the appropriate provider with enhanced parameters.
+
+    #     NOTE: temperature/max_tokens/min_tokens are OPTIONAL. If None, they are NOT sent to the provider,
+    #     allowing the provider's own defaults to apply.
+    #     """
+    #     try:
+    #         print(f"🚀 Enhanced Chat request - Provider: {provider.name}, Model: {model}")
+    #         print(f"🔑 API Key present: {bool(getattr(provider, 'api_key', None))}")
+    #         print(f"🌐 Base URL: {provider.base_url}")
+    #         print(f"📝 Messages count: {len(messages)}")
+    #         if provider_params:
+    #             print(f"⚙️  Provider params: {json.dumps(provider_params, indent=2)}")
+
+    #         wire = _get_wire(provider)
+
+    #         if wire in ("openai", "cerebras", "groq", "together"):
+    #             # Treat Cerebras (and other OpenAI-compat) via the OpenAI adapter
+    #             return await self._openai_chat(
+    #                 provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+    #             )
+    #         elif wire == "gemini":
+    #             return await self._gemini_chat(
+    #                 provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+    #             )
+    #         elif wire == "anthropic":
+    #             return await self._anthropic_chat_enhanced(
+    #                 provider, model, messages, temperature, max_tokens, min_tokens, timeout_s, provider_params
+    #             )
+    #         elif wire == "ollama":
+    #             return await self._ollama_chat(
+    #                 provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+    #             )
+    #         elif wire == "cohere":
+    #             return await self._cohere_chat(
+    #                 provider, model, messages, temperature, max_tokens, timeout_s, provider_params
+    #             )
+    #         else:
+    #             raise ProviderError(provider.name, f"Unsupported provider wire: {wire or getattr(provider,'type',None)}")
+
+    #     except Exception as e:
+    #         print(f"❌ Chat error - Provider: {provider.name}, Model: {model}, Error: {str(e)}")
+    #         if isinstance(e, ProviderError):
+    #             raise
+    #         raise ProviderError(provider.name, str(e))
+
     async def chat_completion(
         self,
-        provider: Provider,
+        *,
+        provider_wire: str,
         model: str,
         messages: List[Dict[str, str]],
-        temperature: Optional[float] = None,
-        max_tokens: Optional[int] = None,
-        min_tokens: Optional[int] = None,  # Anthropic-only
-        timeout_s: int = 180,
-        provider_params: Optional[Dict[str, Any]] = None,
+        provider_params: Optional[Dict] = None,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
     ) -> str:
-        """
-        Generate chat completion using the appropriate provider with enhanced parameters.
-
-        NOTE: temperature/max_tokens/min_tokens are OPTIONAL. If None, they are NOT sent to the provider,
-        allowing the provider's own defaults to apply.
-        """
-        try:
-            print(f"🚀 Enhanced Chat request - Provider: {provider.name}, Model: {model}")
-            print(f"🔑 API Key present: {bool(getattr(provider, 'api_key', None))}")
-            print(f"🌐 Base URL: {provider.base_url}")
-            print(f"📝 Messages count: {len(messages)}")
-            if provider_params:
-                print(f"⚙️  Provider params: {json.dumps(provider_params, indent=2)}")
-
-            wire = _get_wire(provider)
-
-            if wire in ("openai", "cerebras", "groq", "together"):
-                # Treat Cerebras (and other OpenAI-compat) via the OpenAI adapter
-                return await self._openai_chat(
-                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
-                )
-            elif wire == "gemini":
-                return await self._gemini_chat(
-                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
-                )
-            elif wire == "anthropic":
-                return await self._anthropic_chat_enhanced(
-                    provider, model, messages, temperature, max_tokens, min_tokens, timeout_s, provider_params
-                )
-            elif wire == "ollama":
-                return await self._ollama_chat(
-                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
-                )
-            elif wire == "cohere":
-                return await self._cohere_chat(
-                    provider, model, messages, temperature, max_tokens, timeout_s, provider_params
-                )
-            else:
-                raise ProviderError(provider.name, f"Unsupported provider wire: {wire or getattr(provider,'type',None)}")
-
-        except Exception as e:
-            print(f"❌ Chat error - Provider: {provider.name}, Model: {model}, Error: {str(e)}")
-            if isinstance(e, ProviderError):
-                raise
-            raise ProviderError(provider.name, str(e))
-
+        return await self.lc.chat_completion(
+            provider_wire=provider_wire,
+            model=model,
+            messages=messages,
+            provider_params=provider_params or {},
+            base_url=base_url,
+            api_key=api_key,
+        )
     # ---------------- Anthropic ----------------
 
     async def _anthropic_chat_enhanced(
@@ -566,197 +588,221 @@ class EnhancedChatAdapter:
 
     # ---------------- Utils ----------------
 
-    async def stream_chat(
-            self,
-            *,
-            provider: Provider,
-            model: str,
-            messages: list[dict],
-            temperature: float | None = None,
-            max_tokens: int | None = None,
-            min_tokens: int | None = None,
-            timeout_s: int = 180,
-            provider_params: dict | None = None,
-        ) -> AsyncIterator[str]:
-            """
-            Stream deltas for a single (provider, model). Yield plain text pieces.
-            """
-            wire = _get_wire(provider)
+    # async def stream_chat(
+    #         self,
+    #         *,
+    #         provider: Provider,
+    #         model: str,
+    #         messages: list[dict],
+    #         temperature: float | None = None,
+    #         max_tokens: int | None = None,
+    #         min_tokens: int | None = None,
+    #         timeout_s: int = 180,
+    #         provider_params: dict | None = None,
+    #     ) -> AsyncIterator[str]:
+    #         """
+    #         Stream deltas for a single (provider, model). Yield plain text pieces.
+    #         """
+    #         wire = _get_wire(provider)
 
             
-            if wire in ("openai", "cerebras", "groq", "together"):
-                headers = dict(provider.headers or {})
-                if getattr(provider, "api_key", None):
-                    headers["Authorization"] = f"Bearer {provider.api_key}"
-                headers.setdefault("Accept", "text/event-stream")
-                headers.setdefault("Content-Type", "application/json")
+    #         if wire in ("openai", "cerebras", "groq", "together"):
+    #             headers = dict(provider.headers or {})
+    #             if getattr(provider, "api_key", None):
+    #                 headers["Authorization"] = f"Bearer {provider.api_key}"
+    #             headers.setdefault("Accept", "text/event-stream")
+    #             headers.setdefault("Content-Type", "application/json")
 
-                url = f"{provider.base_url.rstrip('/')}/chat/completions"
+    #             url = f"{provider.base_url.rstrip('/')}/chat/completions"
 
-                is_gpt5 = model.startswith(("gpt-5", "o1-", "gpt-4.1"))
-                is_gpt4o = model.startswith("gpt-4o")
+    #             is_gpt5 = model.startswith(("gpt-5", "o1-", "gpt-4.1"))
+    #             is_gpt4o = model.startswith("gpt-4o")
 
-                payload: Dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "stream": True,
-                }
+    #             payload: Dict[str, Any] = {
+    #                 "model": model,
+    #                 "messages": messages,
+    #                 "stream": True,
+    #             }
 
-                # tokens
-                if max_tokens is not None:
-                    if is_gpt5:
-                        payload["max_completion_tokens"] = max_tokens
-                    else:
-                        payload["max_tokens"] = max_tokens
+    #             # tokens
+    #             if max_tokens is not None:
+    #                 if is_gpt5:
+    #                     payload["max_completion_tokens"] = max_tokens
+    #                 else:
+    #                     payload["max_tokens"] = max_tokens
 
-                # temperature
-                if temperature is not None:
-                    if is_gpt5:
-                        payload["temperature"] = 1.0   # gpt-5 ignores/normalizes
-                    else:
-                        payload["temperature"] = temperature
+    #             # temperature
+    #             if temperature is not None:
+    #                 if is_gpt5:
+    #                     payload["temperature"] = 1.0   # gpt-5 ignores/normalizes
+    #                 else:
+    #                     payload["temperature"] = temperature
 
-                # safe provider params
-                safe_keys = {"top_p", "frequency_penalty", "presence_penalty", "stop", "tools", "tool_choice", "user"}
-                params_src = {}
-                if isinstance(provider_params, dict):
-                    params_src = provider_params.get("openai_params", provider_params) or {}
-                for k, v in (params_src.items() if isinstance(params_src, dict) else []):
-                    if v is not None and k in safe_keys:
-                        payload[k] = v
+    #             # safe provider params
+    #             safe_keys = {"top_p", "frequency_penalty", "presence_penalty", "stop", "tools", "tool_choice", "user"}
+    #             params_src = {}
+    #             if isinstance(provider_params, dict):
+    #                 params_src = provider_params.get("openai_params", provider_params) or {}
+    #             for k, v in (params_src.items() if isinstance(params_src, dict) else []):
+    #                 if v is not None and k in safe_keys:
+    #                     payload[k] = v
 
-                # scrub unsupported extras for gpt-5
-                if is_gpt5:
-                    payload.pop("response_format", None)
-                    payload.pop("seed", None)
-                    if "tools" in payload and not payload["tools"]:
-                        payload.pop("tools")
-                    if "tool_choice" in payload and "tools" not in payload:
-                        payload.pop("tool_choice")
-                payload = self._sanitize_openai_payload(model, payload)
-                async with httpx.AsyncClient(timeout=timeout_s) as client:
-                    async with client.stream("POST", url, headers=headers, json=payload) as r:
+    #             # scrub unsupported extras for gpt-5
+    #             if is_gpt5:
+    #                 payload.pop("response_format", None)
+    #                 payload.pop("seed", None)
+    #                 if "tools" in payload and not payload["tools"]:
+    #                     payload.pop("tools")
+    #                 if "tool_choice" in payload and "tools" not in payload:
+    #                     payload.pop("tool_choice")
+    #             payload = self._sanitize_openai_payload(model, payload)
+    #             async with httpx.AsyncClient(timeout=timeout_s) as client:
+    #                 async with client.stream("POST", url, headers=headers, json=payload) as r:
                         
-                        async for line in r.aiter_lines():
-                            if not line or not line.startswith("data: "):
-                                continue
-                            data = line[6:].strip()
-                            if data == "[DONE]":
-                                break
-                            try:
-                                j = json.loads(data)
-                                if "error" in j:
-                                    raise ProviderError(provider.name, j["error"].get("message", str(j)))
-                                delta = j["choices"][0]["delta"].get("content") or ""
-                                if delta:
-                                    yield delta
-                            except Exception as e:
-                                print(f"⚠️ SSE parse error: {e} / {line}")
+    #                     async for line in r.aiter_lines():
+    #                         if not line or not line.startswith("data: "):
+    #                             continue
+    #                         data = line[6:].strip()
+    #                         if data == "[DONE]":
+    #                             break
+    #                         try:
+    #                             j = json.loads(data)
+    #                             if "error" in j:
+    #                                 raise ProviderError(provider.name, j["error"].get("message", str(j)))
+    #                             delta = j["choices"][0]["delta"].get("content") or ""
+    #                             if delta:
+    #                                 yield delta
+    #                         except Exception as e:
+    #                             print(f"⚠️ SSE parse error: {e} / {line}")
 
 
 
-            if wire == "anthropic":
-                # Anthropic streaming via SSE "data:" lines on /v1/messages?stream=true
-                headers = dict(provider.headers or {})
-                if getattr(provider, "api_key", None):
-                    headers["x-api-key"] = provider.api_key
-                headers.setdefault("anthropic-version", "2023-06-01")
+    #         if wire == "anthropic":
+    #             # Anthropic streaming via SSE "data:" lines on /v1/messages?stream=true
+    #             headers = dict(provider.headers or {})
+    #             if getattr(provider, "api_key", None):
+    #                 headers["x-api-key"] = provider.api_key
+    #             headers.setdefault("anthropic-version", "2023-06-01")
 
-                url = f"{provider.base_url.rstrip('/')}/v1/messages"
+    #             url = f"{provider.base_url.rstrip('/')}/v1/messages"
 
-                # Build anthropic payload using your existing helpers
-                ap_kwargs: dict = dict(provider_params or {})
-                if max_tokens is not None:
-                    ap_kwargs["max_tokens"] = max_tokens
-                if temperature is not None:
-                    ap_kwargs["temperature"] = temperature
+    #             # Build anthropic payload using your existing helpers
+    #             ap_kwargs: dict = dict(provider_params or {})
+    #             if max_tokens is not None:
+    #                 ap_kwargs["max_tokens"] = max_tokens
+    #             if temperature is not None:
+    #                 ap_kwargs["temperature"] = temperature
 
-                anthropic_params: AnthropicParameters = create_anthropic_params(model=model, **ap_kwargs)
+    #             anthropic_params: AnthropicParameters = create_anthropic_params(model=model, **ap_kwargs)
 
-                # Convert messages
-                system_texts = [m["content"] for m in messages if m.get("role") == "system"]
-                system_str = "\n".join(system_texts) if system_texts else None
-                anthropic_messages = []
-                for m in messages:
-                    role = m.get("role")
-                    if role in ("user", "assistant"):
-                        anthropic_messages.append({
-                            "role": "user" if role == "user" else "assistant",
-                            "content": [{"type": "text", "text": m.get("content", "")}],
-                        })
+    #             # Convert messages
+    #             system_texts = [m["content"] for m in messages if m.get("role") == "system"]
+    #             system_str = "\n".join(system_texts) if system_texts else None
+    #             anthropic_messages = []
+    #             for m in messages:
+    #                 role = m.get("role")
+    #                 if role in ("user", "assistant"):
+    #                     anthropic_messages.append({
+    #                         "role": "user" if role == "user" else "assistant",
+    #                         "content": [{"type": "text", "text": m.get("content", "")}],
+    #                     })
 
-                payload = anthropic_params.to_anthropic_payload(messages=anthropic_messages, system=system_str)
-                if min_tokens is not None:
-                    payload["min_output_tokens"] = int(min_tokens)
-                payload["stream"] = True
+    #             payload = anthropic_params.to_anthropic_payload(messages=anthropic_messages, system=system_str)
+    #             if min_tokens is not None:
+    #                 payload["min_output_tokens"] = int(min_tokens)
+    #             payload["stream"] = True
 
-                async with httpx.AsyncClient(timeout=timeout_s) as client:
-                    async with client.stream("POST", url, headers=headers, json=payload) as r:
-                        self._ensure_ok_stream(r)
-                        async for line in r.aiter_lines():
-                            if not line:
-                                continue
-                            if line.startswith("data: "):
-                                data = line[6:].strip()
-                                if data == "[DONE]":
-                                    break
-                                try:
-                                    j = json.loads(data)
-                                    t = j.get("type")
-                                    if t in ("message_delta", "content_block_delta"):
-                                        delta = (j.get("delta") or {}).get("text") or ""
-                                        if delta:
-                                            yield delta
-                                except Exception:
-                                    pass
-                        return
+    #             async with httpx.AsyncClient(timeout=timeout_s) as client:
+    #                 async with client.stream("POST", url, headers=headers, json=payload) as r:
+    #                     self._ensure_ok_stream(r)
+    #                     async for line in r.aiter_lines():
+    #                         if not line:
+    #                             continue
+    #                         if line.startswith("data: "):
+    #                             data = line[6:].strip()
+    #                             if data == "[DONE]":
+    #                                 break
+    #                             try:
+    #                                 j = json.loads(data)
+    #                                 t = j.get("type")
+    #                                 if t in ("message_delta", "content_block_delta"):
+    #                                     delta = (j.get("delta") or {}).get("text") or ""
+    #                                     if delta:
+    #                                         yield delta
+    #                             except Exception:
+    #                                 pass
+    #                     return
 
-            if wire == "ollama":
-                # Ollama streams JSON objects line-by-line on /api/chat with stream=true
-                url = f"{provider.base_url.rstrip('/')}/api/chat"
-                options: dict = {}
-                if temperature is not None:
-                    options["temperature"] = temperature
-                if max_tokens is not None:
-                    options["num_predict"] = max_tokens
-                if provider_params:
-                    for k in ("mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "repeat_penalty", "top_k", "top_p", "stop", "seed"):
-                        if k in provider_params:
-                            options[k] = provider_params[k]
+    #         if wire == "ollama":
+    #             # Ollama streams JSON objects line-by-line on /api/chat with stream=true
+    #             url = f"{provider.base_url.rstrip('/')}/api/chat"
+    #             options: dict = {}
+    #             if temperature is not None:
+    #                 options["temperature"] = temperature
+    #             if max_tokens is not None:
+    #                 options["num_predict"] = max_tokens
+    #             if provider_params:
+    #                 for k in ("mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "repeat_penalty", "top_k", "top_p", "stop", "seed"):
+    #                     if k in provider_params:
+    #                         options[k] = provider_params[k]
 
-                payload = {"model": model, "messages": messages, "stream": True, "options": options}
+    #             payload = {"model": model, "messages": messages, "stream": True, "options": options}
 
-                async with httpx.AsyncClient(timeout=timeout_s) as client:
-                    async with client.stream("POST", url, json=payload) as r:
-                        self._ensure_ok_stream(r)
-                        async for line in r.aiter_lines():
-                            if not line:
-                                continue
-                            try:
-                                j = json.loads(line)
-                                # spec variants: j["message"]["content"] or j["message"]["content"] chunks
-                                msg = j.get("message", {})
-                                piece = msg.get("content") or j.get("response") or ""
-                                if piece:
-                                    yield piece
-                                if j.get("done"):
-                                    break
-                            except Exception:
-                                pass
-                        return
+    #             async with httpx.AsyncClient(timeout=timeout_s) as client:
+    #                 async with client.stream("POST", url, json=payload) as r:
+    #                     self._ensure_ok_stream(r)
+    #                     async for line in r.aiter_lines():
+    #                         if not line:
+    #                             continue
+    #                         try:
+    #                             j = json.loads(line)
+    #                             # spec variants: j["message"]["content"] or j["message"]["content"] chunks
+    #                             msg = j.get("message", {})
+    #                             piece = msg.get("content") or j.get("response") or ""
+    #                             if piece:
+    #                                 yield piece
+    #                             if j.get("done"):
+    #                                 break
+    #                         except Exception:
+    #                             pass
+    #                     return
 
-            if wire == "gemini":
-                # Simplest: fall back to a single non-streaming chunk. (You can swap to
-                # streamGenerateContent later if needed.)
-                text = await self._gemini_chat(provider, model, messages, temperature, max_tokens, timeout_s, provider_params)
-                if text:
-                    yield text
-                return
+    #         if wire == "gemini":
+    #             # Simplest: fall back to a single non-streaming chunk. (You can swap to
+    #             # streamGenerateContent later if needed.)
+    #             text = await self._gemini_chat(provider, model, messages, temperature, max_tokens, timeout_s, provider_params)
+    #             if text:
+    #                 yield text
+    #             return
 
-            # Unknown wire => fall back to non-streaming
-            text = await self.chat_completion(provider, model, messages, temperature, max_tokens, min_tokens, timeout_s, provider_params)
-            if text:
-                yield text
+    #         # Unknown wire => fall back to non-streaming
+    #         text = await self.chat_completion(provider, model, messages, temperature, max_tokens, min_tokens, timeout_s, provider_params)
+    #         if text:
+    #             yield text
+
+    async def stream_chat(
+        self,
+        provider_wire: str,
+        model: str,
+        messages: List[Dict[str, str]],
+        provider_params: Optional[Dict] = None,
+        *,
+        base_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """
+        Unified streaming entrypoint expected by EnhancedChatService.
+        Delegates directly to LangChain adapter.
+        """
+        async for delta in self.lc.stream_chat(
+            provider_wire=provider_wire,
+            model=model,
+            messages=messages,
+            provider_params=provider_params or {},
+            base_url=base_url,
+            api_key=api_key,
+        ):
+            yield delta    
     
     def _ensure_ok_stream(self, response: httpx.Response) -> None:
         # Do NOT read response body here — it's a stream.

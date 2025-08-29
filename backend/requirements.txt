@@ -13,3 +13,4 @@ langchain-anthropic
 langchain-openai
 langchain-google-genai 
 langchain-ollama
+langchain-cohere
