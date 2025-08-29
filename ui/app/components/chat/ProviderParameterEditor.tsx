@@ -3,9 +3,18 @@
 
 import { PerModelParam, ProviderWire } from "@/app/lib/types";
 
+const ANTHROPIC_THINKING_MODELS = new Set<string>([
+  "claude-opus-4-1-20250805",
+  "claude-opus-4-20250514",
+  "claude-sonnet-4-20250514",
+  "claude-3-7-sonnet-20250219",
+]);
 
 export default function ProviderParameterEditor({
-  providerWire, params, onUpdate,
+  model,                 // ← use the model name
+  providerWire,
+  params,
+  onUpdate,
 }: {
   model: string;
   providerWire: ProviderWire;
@@ -18,34 +27,54 @@ export default function ProviderParameterEditor({
   const fmtStops = (seq?: string[]) => (seq ? seq.join(", ") : "");
   const parseStops = (v: string) => v.split(",").map(s => s.trim()).filter(Boolean);
 
+  // ---- Anthropic section ----
   if (providerWire === "anthropic") {
+    const supportsThinking = ANTHROPIC_THINKING_MODELS.has(model);
+
+    // If this model does NOT support thinking, strip any stale thinking flags
+    if (!supportsThinking && (params.thinking_enabled || params.thinking_budget_tokens)) {
+      const { thinking_enabled, thinking_budget_tokens, ...rest } = params;
+      // fire-and-forget clean; avoid infinite render loops by only doing this when needed
+      queueMicrotask(() => onUpdate(rest));
+    }
+
     return (
       <div className="space-y-3">
         <h4 className="text-sm font-semibold text-orange-600 dark:text-orange-400">Anthropic Parameters</h4>
-        <div className="bg-orange-50/50 dark:bg-orange-900/20 p-3 rounded-lg border border-orange-200 dark:border-orange-800">
-          <label className="flex items-center gap-2 mb-2">
-            <input
-              type="checkbox"
-              checked={params.thinking_enabled ?? false}
-              onChange={(e) => updateParam("thinking_enabled", e.target.checked)}
-              className="accent-orange-600 dark:accent-orange-500"
-            />
-            <span className="text-sm font-medium">Enable Extended Thinking</span>
-          </label>
-          {params.thinking_enabled && (
-            <div>
-              <label className="block text-xs font-medium mb-1">Thinking Budget (tokens)</label>
+
+        {supportsThinking && (
+          <div className="bg-orange-50/50 dark:bg-orange-900/20 p-3 rounded-lg border border-orange-200 dark:border-orange-800">
+            <label className="flex items-center gap-2 mb-2">
               <input
-                type="number"
-                min={1024}
-                value={params.thinking_budget_tokens ?? 2048}
-                onChange={(e) => updateParam("thinking_budget_tokens", Number(e.target.value))}
-                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-                placeholder="2048"
+                type="checkbox"
+                checked={params.thinking_enabled ?? false}
+                onChange={(e) => updateParam("thinking_enabled", e.target.checked)}
+                className="accent-orange-600 dark:accent-orange-500"
               />
-            </div>
-          )}
-        </div>
+              <span className="text-sm font-medium">Enable Extended Thinking</span>
+            </label>
+            {params.thinking_enabled && (
+              <div>
+                <label className="block text-xs font-medium mb-1">Thinking Budget (tokens)</label>
+                <input
+                  type="number"
+                  min={1024}
+                  value={params.thinking_budget_tokens ?? 2048}
+                  onChange={(e) => updateParam("thinking_budget_tokens", Number(e.target.value))}
+                  className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                  placeholder="2048"
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {!supportsThinking && (
+          <div className="text-xs text-zinc-600 dark:text-zinc-400">
+            Extended Thinking isn’t available for this Anthropic model.
+          </div>
+        )}
+
         <div className="grid grid-cols-2 gap-3">
           <Num label="Top-K" val={params.top_k} onChange={(n)=>updateParam("top_k",n)} placeholder="40" />
           <Num label="Top-P" val={params.top_p} min={0} max={1} step={0.1} onChange={(n)=>updateParam("top_p",n)} placeholder="0.9" />
@@ -63,6 +92,7 @@ export default function ProviderParameterEditor({
       </div>
     );
   }
+
 
   if (providerWire === "openai") {
     return (

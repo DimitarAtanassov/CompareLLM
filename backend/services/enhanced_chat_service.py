@@ -173,9 +173,6 @@ class EnhancedChatService:
                       provider=provider.name, model=model_name,
                       ok=False, duration_ms=duration_ms, error=str(e))
             raise ProviderError(provider.name, str(e))
-
-
-
     
     def _validate_models(self, models: List[str]) -> None:
         """Validate that all requested models are available."""

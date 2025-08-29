@@ -26,6 +26,15 @@ import { PROVIDER_BADGE_BG } from "../lib/colors";
 import EmbeddingLeftRail from "./embeddings/EmbeddingLeftRail";
 import EmbeddingRightRail from "./embeddings/EmbeddingRightRail";
 
+const ANTHROPIC_THINKING_MODELS = new Set<string>([
+  "claude-opus-4-1-20250805",
+  "claude-opus-4-20250514",
+  "claude-sonnet-4-20250514",
+  "claude-3-7-sonnet-20250219",
+]);
+
+const supportsAnthropicThinking = (model: string) => ANTHROPIC_THINKING_MODELS.has(model);
+
 /** Streamed event from /v2/chat/completions/enhanced/ndjson */
 type StreamEvent =
   | { type: "meta"; models: string[] }
@@ -302,15 +311,17 @@ export default function CompareLLMClient(): JSX.Element {
         if (mn !== undefined) enhancedRequest.min_tokens = mn;
 
         if (providerWire === "anthropic") {
+          const canThink = supportsAnthropicThinking(activeModel);
           const p: NonNullable<EnhancedChatRequest["anthropic_params"]> = pruneUndefined({
-            thinking_enabled: modelParam.thinking_enabled,
-            thinking_budget_tokens: modelParam.thinking_budget_tokens,
+            // only include thinking fields if supported
+            ...(canThink ? { thinking_enabled: modelParam.thinking_enabled } : {}),
+            ...(canThink ? { thinking_budget_tokens: modelParam.thinking_budget_tokens } : {}),
             top_k: modelParam.top_k,
             top_p: modelParam.top_p,
             stop_sequences: modelParam.stop_sequences,
           });
           if (Object.keys(p).length) enhancedRequest.anthropic_params = p;
-        } else if (providerWire === "openai") {
+        }else if (providerWire === "openai") {
           const p: NonNullable<EnhancedChatRequest["openai_params"]> = pruneUndefined({
             top_p: modelParam.top_p,
             frequency_penalty: modelParam.frequency_penalty,
@@ -724,11 +735,15 @@ export default function CompareLLMClient(): JSX.Element {
       const ollamaModels = selected.filter((m) => getProviderWire(m) === "ollama");
 
       if (anthropicModels.length > 0) {
+        const anyNonSupporting = anthropicModels.some((m) => !supportsAnthropicThinking(m));
         const merged = pruneUndefined(
           anthropicModels.reduce((acc, model) => {
             const p = modelParams[model] || {};
-            acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
-            acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
+            // Only propagate thinking if *all* selected Anthropic models support it
+            if (!anyNonSupporting) {
+              acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
+              acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
+            }
             acc.top_k = acc.top_k ?? p.top_k;
             acc.top_p = acc.top_p ?? p.top_p;
             acc.stop_sequences = acc.stop_sequences ?? p.stop_sequences;
@@ -736,7 +751,7 @@ export default function CompareLLMClient(): JSX.Element {
           }, {} as NonNullable<EnhancedChatRequest["anthropic_params"]>)
         );
         if (Object.keys(merged).length > 0) enhancedRequest.anthropic_params = merged;
-      }
+}
 
       if (openaiModels.length > 0) {
         const merged = pruneUndefined(
@@ -859,14 +874,15 @@ export default function CompareLLMClient(): JSX.Element {
       const add = <T extends object>(obj?: T) => (obj && Object.keys(obj).length ? obj : undefined);
 
       if (wire === "anthropic") {
+        const canThink = supportsAnthropicThinking(model);
         enhancedNdjsonPayload["anthropic_params"] = add({
-          thinking_enabled: perModel.thinking_enabled,
-          thinking_budget_tokens: perModel.thinking_budget_tokens,
+          ...(canThink ? { thinking_enabled: perModel.thinking_enabled } : {}),
+          ...(canThink ? { thinking_budget_tokens: perModel.thinking_budget_tokens } : {}),
           top_k: perModel.top_k,
           top_p: perModel.top_p,
           stop_sequences: perModel.stop_sequences,
         });
-      } else if (wire === "openai") {
+      }else if (wire === "openai") {
         enhancedNdjsonPayload["openai_params"] = add({
           top_p: perModel.top_p,
           frequency_penalty: perModel.frequency_penalty,
