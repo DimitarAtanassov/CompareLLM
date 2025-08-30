@@ -15,7 +15,7 @@ import {
   ProviderWire,
   SearchResult,
 } from "../lib/types";
-import { coerceBrand, coerceWire } from "../lib/utils";
+import { coerceBrand } from "../lib/utils"; // ⬅ removed coerceWire (no backend wires)
 import { API_BASE } from "../lib/config";
 import InteractiveChatModal from "./chat/InteractiveChatModal";
 import Tabs from "./ui/Tabs";
@@ -26,47 +26,196 @@ import { PROVIDER_BADGE_BG } from "../lib/colors";
 import EmbeddingLeftRail from "./embeddings/EmbeddingLeftRail";
 import EmbeddingRightRail from "./embeddings/EmbeddingRightRail";
 
-/** Streamed event from /v2/chat/completions/enhanced/ndjson */
-type StreamEvent =
-  | { type: "meta"; models: string[] }
-  | { type: "chunk"; model: string; answer?: string; error?: string; latency_ms: number }
-  | { type: "done" };
+// === NDJSON event shape from /chat/stream ===
+type NDJSONEvent =
+  | { type: "start"; provider: string; model: string }
+  | { type: "delta"; provider: string; model: string; text: string }
+  | { type: "end"; provider: string; model: string; text?: string }
+  | { type: "error"; provider: string; model: string; error: string }
+  | { type: "all_done" };
 
-/** Body shape for the enhanced chat endpoint */
-type EnhancedChatRequest = {
-  messages: { role: string; content: string }[];
-  models: string[];
+type Selection = { provider: string; model: string };
+type ChatMsg = { role: string; content: string };
+
+// --- Group param shapes (same as backend expects) ---
+interface AnthropicGroupParams {
+  thinking_enabled?: boolean;
+  thinking_budget_tokens?: number;
+  top_k?: number;
+  top_p?: number;
+  stop_sequences?: string[];
+}
+
+interface OpenAIGroupParams {
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  seed?: number;
+}
+
+interface GeminiGroupParams {
+  top_k?: number;
+  top_p?: number;
+  candidate_count?: number;
+  safety_settings?: unknown[];
+}
+
+interface OllamaGroupParams {
+  mirostat?: number;
+  mirostat_eta?: number;
+  mirostat_tau?: number;
+  num_ctx?: number;
+  repeat_penalty?: number;
+}
+
+interface ChatRequestBody {
+  prompt: string;
+  selections: Selection[];
+  history?: ChatMsg[];
+  system?: string;
   temperature?: number;
   max_tokens?: number;
   min_tokens?: number;
-  anthropic_params?: {
-    thinking_enabled?: boolean;
-    thinking_budget_tokens?: number;
-    top_k?: number;
-    top_p?: number;
-    stop_sequences?: string[];
+  model_params?: ModelParamsMap;
+  anthropic_params?: AnthropicGroupParams;
+  openai_params?: OpenAIGroupParams;
+  gemini_params?: GeminiGroupParams;
+  ollama_params?: OllamaGroupParams;
+}
+
+// === Helper: model -> backend provider key (registry YAML `type`) ===
+function buildModelToProviderKeyMap(providers: ProviderInfo[]) {
+  const map: Record<string, string> = {};
+  for (const p of providers) {
+    const key = (p.type || "").toLowerCase().trim(); // exact registry key
+    const models = Array.isArray(p.models) ? p.models : [];
+    const embeds = Array.isArray(p.embedding_models) ? p.embedding_models : [];
+    for (const m of models) map[m] = key;
+    for (const m of embeds) map[m] = key;
+  }
+  return map;
+}
+
+// === UI-only: map provider key -> param editor wire ===
+function uiWireForProviderKey(
+  provKey: string
+): ProviderWire {
+  if (provKey === "openai") return "openai";
+  if (provKey === "anthropic") return "anthropic";
+  if (provKey === "gemini") return "gemini";
+  if (provKey === "ollama") return "ollama";
+  if (provKey === "cohere") return "cohere";
+  // Cerebras is OpenAI-compatible for params UI
+  if (provKey === "cerebras") return "openai";
+  return "unknown";
+}
+
+// === Build selections for /chat endpoints (no wire) ===
+function buildSelections(
+  selected: string[],
+  providerOf: (m: string) => string
+): Selection[] {
+  return selected.map((model) => ({
+    provider: providerOf(model), // backend registry key only
+    model,
+  }));
+}
+
+// === Build ChatRequest body for /chat/stream and /chat/batch (no wireOf) ===
+function buildChatRequestBody(opts: {
+  prompt: string;
+  selected: string[];
+  providerOf: (m: string) => string; // backend provider key
+  history?: ChatMsg[];
+  system?: string;
+  temperature?: number;
+  max_tokens?: number;
+  min_tokens?: number;
+  modelParams: ModelParamsMap;
+}): ChatRequestBody {
+  const {
+    prompt,
+    selected,
+    providerOf,
+    history,
+    system,
+    temperature,
+    max_tokens,
+    min_tokens,
+    modelParams,
+  } = opts;
+
+  const selections = buildSelections(selected, providerOf);
+
+  // Group by backend provider key
+  const provOf = providerOf;
+  const anthropic_models = selected.filter((m) => provOf(m) === "anthropic");
+  const openai_like_models = selected.filter((m) => {
+    const p = provOf(m);
+    return p === "openai" || p === "cerebras"; // treat Cerebras as OpenAI-compatible
+  });
+  const gemini_models = selected.filter((m) => provOf(m) === "gemini");
+  const ollama_models = selected.filter((m) => provOf(m) === "ollama");
+
+  const anthropic_params: AnthropicGroupParams = {};
+  for (const m of anthropic_models) {
+    const p = modelParams[m] || {};
+    if (anthropic_params.thinking_enabled === undefined) anthropic_params.thinking_enabled = p.thinking_enabled;
+    if (anthropic_params.thinking_budget_tokens === undefined) anthropic_params.thinking_budget_tokens = p.thinking_budget_tokens;
+    if (anthropic_params.top_k === undefined) anthropic_params.top_k = p.top_k;
+    if (anthropic_params.top_p === undefined) anthropic_params.top_p = p.top_p;
+    if (anthropic_params.stop_sequences === undefined) anthropic_params.stop_sequences = p.stop_sequences as string[] | undefined;
+  }
+
+  const openai_params: OpenAIGroupParams = {};
+  for (const m of openai_like_models) {
+    const p = modelParams[m] || {};
+    if (openai_params.top_p === undefined) openai_params.top_p = p.top_p;
+    if (openai_params.frequency_penalty === undefined) openai_params.frequency_penalty = p.frequency_penalty;
+    if (openai_params.presence_penalty === undefined) openai_params.presence_penalty = p.presence_penalty;
+    if (openai_params.seed === undefined) openai_params.seed = p.seed;
+  }
+
+  const gemini_params: GeminiGroupParams = {};
+  for (const m of gemini_models) {
+    const p = modelParams[m] || {};
+    if (gemini_params.top_k === undefined) gemini_params.top_k = p.top_k;
+    if (gemini_params.top_p === undefined) gemini_params.top_p = p.top_p;
+    if (gemini_params.candidate_count === undefined) gemini_params.candidate_count = p.candidate_count;
+    if (gemini_params.safety_settings === undefined) gemini_params.safety_settings = p.safety_settings as unknown[];
+  }
+
+  const ollama_params: OllamaGroupParams = {};
+  for (const m of ollama_models) {
+    const p = modelParams[m] || {};
+    if (ollama_params.mirostat === undefined) ollama_params.mirostat = p.mirostat;
+    if (ollama_params.mirostat_eta === undefined) ollama_params.mirostat_eta = p.mirostat_eta;
+    if (ollama_params.mirostat_tau === undefined) ollama_params.mirostat_tau = p.mirostat_tau;
+    if (ollama_params.num_ctx === undefined) ollama_params.num_ctx = p.num_ctx;
+    if (ollama_params.repeat_penalty === undefined) ollama_params.repeat_penalty = p.repeat_penalty;
+  }
+
+  const body: ChatRequestBody = {
+    prompt,
+    selections,
   };
-  openai_params?: {
-    top_p?: number;
-    frequency_penalty?: number;
-    presence_penalty?: number;
-    seed?: number;
-  };
-  gemini_params?: {
-    top_k?: number;
-    top_p?: number;
-    candidate_count?: number;
-    safety_settings?: unknown[];
-  };
-  ollama_params?: {
-    mirostat?: number;
-    mirostat_eta?: number;
-    mirostat_tau?: number;
-    num_ctx?: number;
-    repeat_penalty?: number;
-  };
-  model_params?: Record<string, Partial<PerModelParam>>;
-};
+
+  if (history?.length) body.history = history;
+  if (system) body.system = system;
+
+  if (temperature !== undefined) body.temperature = temperature;
+  if (max_tokens !== undefined) body.max_tokens = max_tokens;
+  if (min_tokens !== undefined) body.min_tokens = min_tokens;
+
+  if (Object.keys(modelParams).length) body.model_params = modelParams;
+
+  if (Object.values(anthropic_params).some((v) => v !== undefined)) body.anthropic_params = anthropic_params;
+  if (Object.values(openai_params).some((v) => v !== undefined)) body.openai_params = openai_params;
+  if (Object.values(gemini_params).some((v) => v !== undefined)) body.gemini_params = gemini_params;
+  if (Object.values(ollama_params).some((v) => v !== undefined)) body.ollama_params = ollama_params;
+
+  return body;
+}
 
 export default function CompareLLMClient(): JSX.Element {
   // ==== STATE ====
@@ -95,7 +244,7 @@ export default function CompareLLMClient(): JSX.Element {
   const [uploadingDataset, setUploadingDataset] = useState(false);
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false); // kept for API shape
+  const [_isSearching, _setIsSearching] = useState(false);
   const [jsonInput, setJsonInput] = useState<string>("");
   const [datasetId, setDatasetId] = useState<string>("");
   const [textField, setTextField] = useState<string>("text");
@@ -113,7 +262,7 @@ export default function CompareLLMClient(): JSX.Element {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const interactiveAbortRef = useRef<AbortController | null>(null);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null); // (unused)
+  const chatBottomRef = useRef<HTMLDivElement | null>(null);
   const requestIdRef = useRef(0);
 
   const [modelParams, setModelParams] = useState<ModelParamsMap>({});
@@ -122,17 +271,15 @@ export default function CompareLLMClient(): JSX.Element {
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
   const [topKSingle, setTopKSingle] = useState<number>(5);
   const [topKCompare, setTopKCompare] = useState<number>(5);
-  const useEnhancedAPI = true;
 
-  // Expanded parameter sections (per model)
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
 
-  // NEW: track last run prompt + input focus ref (for Reprompt)
   const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
 
   // ==== MEMO MAPS ====
-  const modelToProvider = useMemo(() => {
+  // Display brand (badges, etc.)
+  const modelToBrand = useMemo(() => {
     const map: Record<string, ProviderBrand> = {};
     providers.forEach((p) => {
       (p.models || []).forEach((m) => (map[m] = coerceBrand(p.type)));
@@ -141,30 +288,94 @@ export default function CompareLLMClient(): JSX.Element {
     return map;
   }, [providers]);
 
-  const modelToWire = useMemo(() => {
-    const map: Record<string, ProviderWire> = {};
-    providers.forEach((p) => {
-      const wire = coerceWire(p);
-      (p.models || []).forEach((m) => (map[m] = wire));
-      (p.embedding_models || []).forEach((m) => (map[m] = wire));
-    });
-    return map;
-  }, [providers]);
+  // Backend provider key (registry YAML `type`)
+  const modelToProviderKey = useMemo(() => buildModelToProviderKeyMap(providers), [providers]);
 
-  const getProviderType = useCallback((m: string): ProviderBrand => modelToProvider[m] ?? "unknown", [modelToProvider]);
-  const getProviderWire = useCallback((m: string): ProviderWire => modelToWire[m] ?? "unknown", [modelToWire]);
+  const getProviderType = useCallback((m: string): ProviderBrand => modelToBrand[m] ?? "unknown", [modelToBrand]);
+  const getProviderKey = useCallback((m: string): string => modelToProviderKey[m] ?? "unknown", [modelToProviderKey]);
 
   // ==== LOAD PROVIDERS ====
   useEffect(() => {
+    const isString = (x: unknown): x is string => typeof x === "string";
+
+    const pickModelName = (v: unknown): string | null => {
+      if (typeof v === "string") return v;
+      if (v && typeof v === "object") {
+        const o = v as Record<string, unknown>;
+        if (isString(o.model)) return o.model;
+        if (isString(o.name)) return o.name;
+        if (isString(o.id)) return o.id;
+      }
+      return null;
+    };
+
     const load = async () => {
       setLoadingProviders(true);
       try {
         const res = await fetch(`${API_BASE}/providers`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Failed to load providers: ${res.statusText}`);
-        const data = (await res.json()) as ProvidersResp;
-        setProviders(data.providers);
-        const models = [...new Set(data.providers.flatMap((p) => p.models))].sort();
-        const embeddingModels = [...new Set(data.providers.flatMap((p) => p.embedding_models || []))].sort();
+        if (!res.ok) throw new Error(`Failed to load providers: ${res.status} ${res.statusText}`);
+        const raw = await res.json();
+
+        const provsUnknown: unknown = Array.isArray(raw)
+          ? raw
+          : Array.isArray(raw?.providers)
+          ? raw.providers
+          : raw?.providers && typeof raw.providers === "object"
+          ? Object.values(raw.providers as Record<string, unknown>)
+          : [];
+
+        const arr = Array.isArray(provsUnknown) ? provsUnknown : [];
+
+        const normalized: ProviderInfo[] = arr.map((item, idx) => {
+          const p = (item ?? {}) as Record<string, unknown>;
+
+          const name =
+            isString(p.name) ? p.name : isString(p.key) ? p.key : isString(p.id) ? p.id : `prov_${idx}`;
+          const type = isString(p.type) ? p.type : "unknown";
+          const base_url = isString(p.base_url) ? p.base_url : "";
+
+          const rawModels = Array.isArray(p.models)
+            ? p.models
+            : Array.isArray(p.chat_models)
+            ? p.chat_models
+            : Array.isArray(p.llm_models)
+            ? p.llm_models
+            : [];
+
+          const models = rawModels.map(pickModelName).filter((m): m is string => !!m);
+
+          const rawEmb = Array.isArray(p.embedding_models)
+            ? p.embedding_models
+            : Array.isArray(p.embed_models)
+            ? p.embed_models
+            : [];
+
+          const embedding_models = rawEmb.map(pickModelName).filter((m): m is string => !!m);
+
+          const auth_required =
+            typeof p.auth_required === "boolean"
+              ? p.auth_required
+              : typeof p.requires_api_key === "boolean"
+              ? p.requires_api_key
+              : isString(p.api_key_env);
+
+          const base: ProviderInfo = {
+            name,
+            type,
+            base_url,
+            models,
+            embedding_models,
+            auth_required,
+          };
+
+          return base;
+        });
+
+        setProviders(normalized);
+
+        const models = [...new Set(normalized.flatMap((p) => p.models ?? []))].sort();
+        const embeddingModels = [...new Set(normalized.flatMap((p) => p.embedding_models ?? []))].sort();
+
         setAllModels(models);
         setAllEmbeddingModels(embeddingModels);
         if (embeddingModels.length > 0) setSelectedSearchModel(embeddingModels[0]);
@@ -172,6 +383,7 @@ export default function CompareLLMClient(): JSX.Element {
         setLoadingProviders(false);
       }
     };
+
     void load();
   }, []);
 
@@ -191,8 +403,7 @@ export default function CompareLLMClient(): JSX.Element {
 
     setExpandedModels((prevExp) => {
       const ns = new Set(prevExp);
-      // Do NOT auto-expand newly added models
-      removed.forEach((m) => ns.delete(m)); // collapse when deselected
+      removed.forEach((m) => ns.delete(m));
       return ns;
     });
 
@@ -219,7 +430,7 @@ export default function CompareLLMClient(): JSX.Element {
   }, []);
 
   // =============================
-  // Interactive Chat
+  // Interactive Chat (one-shot per model via /chat/batch)
   // =============================
   const openModelChat = useCallback(
     (model: string) => {
@@ -277,85 +488,24 @@ export default function CompareLLMClient(): JSX.Element {
         ...currentChat.messages,
         { role: "user" as const, content: message, timestamp: Date.now() },
       ];
-      const apiMessages = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
+      const apiMessages: ChatMsg[] = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
 
-      const modelParam = modelParams[activeModel] || {};
-      const providerWire = getProviderWire(activeModel);
-      const hasProviderParams = Object.keys(modelParam).some(
-        (k) => !["temperature", "max_tokens", "min_tokens"].includes(k)
-      );
+      const body = buildChatRequestBody({
+        prompt: message,
+        selected: [activeModel],
+        providerOf: (m) => getProviderKey(m), // ⬅ backend provider key only
+        history: apiMessages.slice(0, -1),
+        system: undefined,
+        temperature: modelParams[activeModel]?.temperature ?? globalTemp,
+        max_tokens: modelParams[activeModel]?.max_tokens ?? globalMax,
+        min_tokens: modelParams[activeModel]?.min_tokens ?? globalMin,
+        modelParams: { [activeModel]: modelParams[activeModel] || {} },
+      });
 
-      let endpoint = "";
-      let body = "";
-
-      if (useEnhancedAPI || hasProviderParams) {
-        endpoint = `${API_BASE}/v2/chat/completions/enhanced`;
-        const enhancedRequest: EnhancedChatRequest = {
-          messages: apiMessages,
-          models: [activeModel],
-        };
-        const t = modelParam.temperature ?? globalTemp;
-        const mx = modelParam.max_tokens ?? globalMax;
-        const mn = modelParam.min_tokens ?? globalMin;
-        if (t !== undefined) enhancedRequest.temperature = t;
-        if (mx !== undefined) enhancedRequest.max_tokens = mx;
-        if (mn !== undefined) enhancedRequest.min_tokens = mn;
-
-        if (providerWire === "anthropic") {
-          const p: NonNullable<EnhancedChatRequest["anthropic_params"]> = pruneUndefined({
-            thinking_enabled: modelParam.thinking_enabled,
-            thinking_budget_tokens: modelParam.thinking_budget_tokens,
-            top_k: modelParam.top_k,
-            top_p: modelParam.top_p,
-            stop_sequences: modelParam.stop_sequences,
-          });
-          if (Object.keys(p).length) enhancedRequest.anthropic_params = p;
-        } else if (providerWire === "openai") {
-          const p: NonNullable<EnhancedChatRequest["openai_params"]> = pruneUndefined({
-            top_p: modelParam.top_p,
-            frequency_penalty: modelParam.frequency_penalty,
-            presence_penalty: modelParam.presence_penalty,
-            seed: modelParam.seed,
-          });
-          if (Object.keys(p).length) enhancedRequest.openai_params = p;
-        } else if (providerWire === "gemini") {
-          const p: NonNullable<EnhancedChatRequest["gemini_params"]> = pruneUndefined({
-            top_k: modelParam.top_k,
-            top_p: modelParam.top_p,
-            candidate_count: modelParam.candidate_count,
-            safety_settings: modelParam.safety_settings,
-          });
-          if (Object.keys(p).length) enhancedRequest.gemini_params = p;
-        } else if (providerWire === "ollama") {
-          const p: NonNullable<EnhancedChatRequest["ollama_params"]> = pruneUndefined({
-            mirostat: modelParam.mirostat,
-            mirostat_eta: modelParam.mirostat_eta,
-            mirostat_tau: modelParam.mirostat_tau,
-            num_ctx: modelParam.num_ctx,
-            repeat_penalty: modelParam.repeat_penalty,
-          });
-          if (Object.keys(p).length) enhancedRequest.ollama_params = p;
-        }
-
-        body = JSON.stringify(enhancedRequest);
-      } else {
-        endpoint = `${API_BASE}/v1/chat/completions`;
-        const stdPayload: Record<string, unknown> = {
-          model: activeModel,
-          messages: apiMessages,
-          stream: false,
-        };
-        const temp = modelParam.temperature ?? globalTemp;
-        const maxTok = modelParam.max_tokens ?? globalMax;
-        if (temp !== undefined) stdPayload.temperature = temp;
-        if (maxTok !== undefined) stdPayload.max_tokens = maxTok;
-        body = JSON.stringify(stdPayload);
-      }
-
-      const res = await fetch(endpoint, {
+      const res = await fetch(`${API_BASE}/chat/batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body,
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 
@@ -364,14 +514,11 @@ export default function CompareLLMClient(): JSX.Element {
         throw new Error(errorData.detail || `HTTP ${res.status}`);
       }
 
-      type EnhancedResp = { answers?: AskAnswers };
-      type OpenAIResp = { choices?: { message?: { content?: string } }[] };
-      const result = (await res.json()) as unknown;
-
-      const assistantMessage: string =
-        useEnhancedAPI || hasProviderParams
-          ? (result as EnhancedResp).answers?.[activeModel]?.answer || "No response"
-          : (result as OpenAIResp).choices?.[0]?.message?.content || "No response";
+      const json = (await res.json()) as {
+        results: { provider: string; model: string; response?: string; error?: string }[];
+      };
+      const entry = json.results.find((r) => r.model === activeModel);
+      const assistantMessage = entry?.response || entry?.error || "No response";
 
       setModelChats((prev) => ({
         ...prev,
@@ -405,7 +552,7 @@ export default function CompareLLMClient(): JSX.Element {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, modelChats, modelParams, getProviderWire, globalTemp, globalMax, globalMin]);
+  }, [activeModel, interactivePrompt, modelChats, modelParams, getProviderKey, globalTemp, globalMax, globalMin]);
 
   // =============================
   // Providers / datasets
@@ -585,7 +732,7 @@ export default function CompareLLMClient(): JSX.Element {
   );
 
   // =============================
-  // Run Prompt (streaming + non-stream)
+  // Run Prompt (NDJSON streaming via /chat/stream)
   // =============================
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
 
@@ -607,19 +754,46 @@ export default function CompareLLMClient(): JSX.Element {
 
     resetRun();
     setIsRunning(true);
-    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
+    setLastRunPrompt(prompt.trim());
 
-    const processEvent = (evt: StreamEvent) => {
-      if (evt.type === "chunk") {
+    const startedAt = Date.now();
+    const modelStart: Record<string, number> = {};
+
+    const processEvent = (evt: NDJSONEvent) => {
+      if (evt.type === "start") {
+        modelStart[evt.model] = Date.now();
+      } else if (evt.type === "delta") {
         setAnswers((prev) => ({
           ...prev,
           [evt.model]: {
-            answer: (prev[evt.model]?.answer || "") + (evt.answer || ""),
-            error: evt.error,
-            latency_ms: evt.latency_ms,
+            answer: (prev[evt.model]?.answer || "") + (evt.text || ""),
+            error: prev[evt.model]?.error,
+            latency_ms: prev[evt.model]?.latency_ms ?? 0,
           },
         }));
-      } else if (evt.type === "done") {
+      } else if (evt.type === "error") {
+        setAnswers((prev) => ({
+          ...prev,
+          [evt.model]: {
+            answer: prev[evt.model]?.answer || "",
+            error: evt.error || "Unknown error",
+            latency_ms: prev[evt.model]?.latency_ms ?? 0,
+          },
+        }));
+      } else if (evt.type === "end") {
+        const t0 = modelStart[evt.model] ?? startedAt;
+        setAnswers((prev) => {
+          const prevAns = prev[evt.model]?.answer || "";
+          return {
+            ...prev,
+            [evt.model]: {
+              ...prev[evt.model],
+              answer: prevAns || evt.text || "",
+              latency_ms: Date.now() - t0,
+            },
+          };
+        });
+      } else if (evt.type === "all_done") {
         setIsRunning(false);
         setEndedAt(Date.now());
         streamAbortRef.current = null;
@@ -627,19 +801,22 @@ export default function CompareLLMClient(): JSX.Element {
     };
 
     try {
-      const ndjsonPayload: Record<string, unknown> = {
-        messages: [{ role: "user", content: prompt }],
-        models: selected,
-        ...(globalTemp !== undefined ? { temperature: globalTemp } : {}),
-        ...(globalMax !== undefined ? { max_tokens: globalMax } : {}),
-        ...(globalMin !== undefined ? { min_tokens: globalMin } : {}),
-        model_params: modelParams,
-      };
+      const body = buildChatRequestBody({
+        prompt: prompt.trim(),
+        selected,
+        providerOf: (m) => getProviderKey(m), // ⬅ send registry provider key
+        history: undefined,
+        system: undefined,
+        temperature: globalTemp,
+        max_tokens: globalMax,
+        min_tokens: globalMin,
+        modelParams,
+      });
 
-      const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced/ndjson`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ndjsonPayload),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
@@ -660,23 +837,18 @@ export default function CompareLLMClient(): JSX.Element {
           const trimmed = line.trim();
           if (!trimmed) continue;
           try {
-            processEvent(JSON.parse(trimmed) as unknown as StreamEvent);
-          } catch (e) {
-            console.warn("Could not parse line", trimmed, e);
+            processEvent(JSON.parse(trimmed) as NDJSONEvent);
+          } catch {
+            // ignore malformed lines
           }
         }
       }
 
-      buf += decoder.decode();
-      const tail = buf
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      for (const t of tail) {
+      if (buf.trim()) {
         try {
-          processEvent(JSON.parse(t) as unknown as StreamEvent);
-        } catch (e) {
-          console.warn("Could not parse tail line", t, e);
+          processEvent(JSON.parse(buf.trim()) as NDJSONEvent);
+        } catch {
+          /* ignore */
         }
       }
     } catch (err) {
@@ -690,136 +862,10 @@ export default function CompareLLMClient(): JSX.Element {
       setIsRunning(false);
       streamAbortRef.current = null;
     }
-  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, resetRun]);
-
-  const runEnhancedPrompt = useCallback(async () => {
-    if (!canRun) return;
-    setIsRunning(true);
-    resetRun();
-    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
-    try {
-      const perModel: Record<string, Partial<PerModelParam>> = {};
-      for (const m of selected) {
-        const p = modelParams[m] || {};
-        const trimmed = pruneUndefined({
-          temperature: p.temperature,
-          max_tokens: p.max_tokens,
-          min_tokens: p.min_tokens,
-        });
-        if (Object.keys(trimmed).length > 0) perModel[m] = trimmed;
-      }
-
-      const enhancedRequest: EnhancedChatRequest = {
-        messages: [{ role: "user", content: prompt }],
-        models: selected,
-      };
-      if (globalTemp !== undefined) enhancedRequest.temperature = globalTemp;
-      if (globalMax !== undefined) enhancedRequest.max_tokens = globalMax;
-      if (globalMin !== undefined) enhancedRequest.min_tokens = globalMin;
-      if (Object.keys(perModel).length > 0) enhancedRequest.model_params = perModel;
-
-      const anthropicModels = selected.filter((m) => getProviderWire(m) === "anthropic");
-      const openaiModels = selected.filter((m) => getProviderWire(m) === "openai");
-      const geminiModels = selected.filter((m) => getProviderWire(m) === "gemini");
-      const ollamaModels = selected.filter((m) => getProviderWire(m) === "ollama");
-
-      if (anthropicModels.length > 0) {
-        const merged = pruneUndefined(
-          anthropicModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
-            acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
-            acc.top_k = acc.top_k ?? p.top_k;
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.stop_sequences = acc.stop_sequences ?? p.stop_sequences;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["anthropic_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.anthropic_params = merged;
-      }
-
-      if (openaiModels.length > 0) {
-        const merged = pruneUndefined(
-          openaiModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.frequency_penalty = acc.frequency_penalty ?? p.frequency_penalty;
-            acc.presence_penalty = acc.presence_penalty ?? p.presence_penalty;
-            acc.seed = acc.seed ?? p.seed;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["openai_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.openai_params = merged;
-      }
-
-      if (geminiModels.length > 0) {
-        const merged = pruneUndefined(
-          geminiModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.top_k = acc.top_k ?? p.top_k;
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.candidate_count = acc.candidate_count ?? p.candidate_count;
-            acc.safety_settings = acc.safety_settings ?? p.safety_settings;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["gemini_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.gemini_params = merged;
-      }
-
-      if (ollamaModels.length > 0) {
-        const merged = pruneUndefined(
-          ollamaModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.mirostat = acc.mirostat ?? p.mirostat;
-            acc.mirostat_eta = acc.mirostat_eta ?? p.mirostat_eta;
-            acc.mirostat_tau = acc.mirostat_tau ?? p.mirostat_tau;
-            acc.num_ctx = acc.num_ctx ?? p.num_ctx;
-            acc.repeat_penalty = acc.repeat_penalty ?? p.repeat_penalty;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["ollama_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.ollama_params = merged;
-      }
-
-      const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(enhancedRequest),
-      });
-      if (!res.ok) {
-        const error = (await res.json().catch(() => ({ detail: res.statusText }))) as { detail?: string };
-        throw new Error(error.detail || `HTTP ${res.status}`);
-      }
-      const result = (await res.json()) as { answers?: AskAnswers };
-      const newAnswers: AskAnswers = {};
-      for (const model of selected) {
-        const modelResult = result.answers?.[model];
-        newAnswers[model] = {
-          answer: modelResult?.answer || "",
-          error: modelResult?.error,
-          latency_ms: modelResult?.latency_ms || 0,
-        };
-      }
-      setAnswers(newAnswers);
-      setEndedAt(Date.now());
-    } catch (err) {
-      console.error("Enhanced API error:", err);
-      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
-    } finally {
-      setIsRunning(false);
-    }
-  }, [canRun, selected, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderWire, resetRun]);
-
-  const executePrompt = useCallback(async () => {
-    if (activeTab === "chat") {
-      await runPrompt();
-    } else {
-      await runEnhancedPrompt();
-    }
-  }, [activeTab, runPrompt, runEnhancedPrompt]);
+  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, resetRun, getProviderKey]);
 
   // =============================
-  // Retry (single model) — STREAM via NDJSON
+  // Retry (single model) — STREAM via /chat/stream
   // =============================
   const retryModel = useCallback(
     async (model: string) => {
@@ -835,69 +881,26 @@ export default function CompareLLMClient(): JSX.Element {
         [model]: { answer: "", error: undefined, latency_ms: 0 },
       }));
 
-      // Build per-model + global params
-      const perModel = modelParams[model] || {};
-      const enhancedNdjsonPayload: Record<string, unknown> = {
-        messages: [{ role: "user", content: retryPrompt }],
-        models: [model],
-        ...(globalTemp !== undefined ? { temperature: globalTemp } : {}),
-        ...(globalMax !== undefined ? { max_tokens: globalMax } : {}),
-        ...(globalMin !== undefined ? { min_tokens: globalMin } : {}),
-        model_params: {
-          [model]: Object.fromEntries(
-            Object.entries({
-              temperature: perModel.temperature,
-              max_tokens: perModel.max_tokens,
-              min_tokens: perModel.min_tokens,
-            }).filter(([, v]) => v !== undefined)
-          ),
-        },
-      };
-
-      // provider-specific group params by wire
-      const wire = getProviderWire(model);
-      const add = <T extends object>(obj?: T) => (obj && Object.keys(obj).length ? obj : undefined);
-
-      if (wire === "anthropic") {
-        enhancedNdjsonPayload["anthropic_params"] = add({
-          thinking_enabled: perModel.thinking_enabled,
-          thinking_budget_tokens: perModel.thinking_budget_tokens,
-          top_k: perModel.top_k,
-          top_p: perModel.top_p,
-          stop_sequences: perModel.stop_sequences,
-        });
-      } else if (wire === "openai") {
-        enhancedNdjsonPayload["openai_params"] = add({
-          top_p: perModel.top_p,
-          frequency_penalty: perModel.frequency_penalty,
-          presence_penalty: perModel.presence_penalty,
-          seed: perModel.seed,
-        });
-      } else if (wire === "gemini") {
-        enhancedNdjsonPayload["gemini_params"] = add({
-          top_k: perModel.top_k,
-          top_p: perModel.top_p,
-          candidate_count: perModel.candidate_count,
-          safety_settings: perModel.safety_settings,
-        });
-      } else if (wire === "ollama") {
-        enhancedNdjsonPayload["ollama_params"] = add({
-          mirostat: perModel.mirostat,
-          mirostat_eta: perModel.mirostat_eta,
-          mirostat_tau: perModel.mirostat_tau,
-          num_ctx: perModel.num_ctx,
-          repeat_penalty: perModel.repeat_penalty,
-        });
-      }
-
       const controller = new AbortController();
       const started = Date.now();
 
       try {
-        const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced/ndjson`, {
+        const body = buildChatRequestBody({
+          prompt: retryPrompt,
+          selected: [model],
+          providerOf: (m) => getProviderKey(m), // ⬅ send registry provider key
+          history: undefined,
+          system: undefined,
+          temperature: modelParams[model]?.temperature ?? globalTemp,
+          max_tokens: modelParams[model]?.max_tokens ?? globalMax,
+          min_tokens: modelParams[model]?.min_tokens ?? globalMin,
+          modelParams: { [model]: modelParams[model] || {} },
+        });
+
+        const res = await fetch(`${API_BASE}/chat/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(enhancedNdjsonPayload),
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
 
@@ -922,68 +925,56 @@ export default function CompareLLMClient(): JSX.Element {
             const trimmed = line.trim();
             if (!trimmed) continue;
 
-            // StreamEvent shape from your runPrompt path
-            // { type: "chunk", model: string, answer?: string, error?: string, latency_ms: number }
-            // { type: "done" }
             try {
-              const evt = JSON.parse(trimmed) as {
-                type: "chunk" | "done";
-                model?: string;
-                answer?: string;
-                error?: string;
-                latency_ms?: number;
-              };
-
-              if (evt.type === "chunk" && (!evt.model || evt.model === model)) {
+              const evt = JSON.parse(trimmed) as NDJSONEvent;
+              if (evt.type === "delta" && evt.model === model) {
                 setAnswers((prev) => ({
                   ...prev,
                   [model]: {
-                    answer: (prev[model]?.answer || "") + (evt.answer || ""),
-                    error: evt.error,
-                    latency_ms: evt.latency_ms ?? (Date.now() - started),
+                    answer: (prev[model]?.answer || "") + (evt.text || ""),
+                    error: prev[model]?.error,
+                    latency_ms: prev[model]?.latency_ms ?? 0,
                   },
                 }));
+              } else if (evt.type === "error" && evt.model === model) {
+                setAnswers((prev) => ({
+                  ...prev,
+                  [model]: { answer: prev[model]?.answer || "", error: evt.error, latency_ms: 0 },
+                }));
+              } else if (evt.type === "end" && evt.model === model) {
+                setAnswers((prev) => ({
+                  ...prev,
+                  [model]: { ...prev[model], latency_ms: Date.now() - started },
+                }));
               }
-              // ignore 'done' here; we'll set final latency below
             } catch {
-              // ignore malformed lines
+              /* ignore malformed */
             }
           }
         }
 
-        // Flush tail
         if (buf.trim()) {
           try {
-            const tailEvt = JSON.parse(buf.trim()) as {
-              type: "chunk" | "done";
-              model?: string;
-              answer?: string;
-              error?: string;
-              latency_ms?: number;
-            };
-            if (tailEvt.type === "chunk" && (!tailEvt.model || tailEvt.model === model)) {
+            const evt = JSON.parse(buf.trim()) as NDJSONEvent;
+            if (evt.type === "delta" && evt.model === model) {
               setAnswers((prev) => ({
                 ...prev,
                 [model]: {
-                  answer: (prev[model]?.answer || "") + (tailEvt.answer || ""),
-                  error: tailEvt.error,
-                  latency_ms: tailEvt.latency_ms ?? (Date.now() - started),
+                  answer: (prev[model]?.answer || "") + (evt.text || ""),
+                  error: prev[model]?.error,
+                  latency_ms: prev[model]?.latency_ms ?? 0,
                 },
+              }));
+            } else if (evt.type === "end" && evt.model === model) {
+              setAnswers((prev) => ({
+                ...prev,
+                [model]: { ...prev[model], latency_ms: Date.now() - started },
               }));
             }
           } catch {
             /* noop */
           }
         }
-
-        // finalize latency
-        setAnswers((prev) => ({
-          ...prev,
-          [model]: {
-            ...prev[model],
-            latency_ms: Date.now() - started,
-          },
-        }));
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Unknown error";
         setAnswers((prev) => ({
@@ -992,9 +983,8 @@ export default function CompareLLMClient(): JSX.Element {
         }));
       }
     },
-    [API_BASE, lastRunPrompt, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderWire]
+    [lastRunPrompt, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderKey]
   );
-
 
   const repromptFromResults = useCallback(() => {
     if (!lastRunPrompt) return;
@@ -1021,7 +1011,7 @@ export default function CompareLLMClient(): JSX.Element {
         if (activeModel && interactivePrompt.trim()) {
           void sendInteractiveMessage();
         } else if (activeTab === "chat" && canRun) {
-          void (useEnhancedAPI ? runEnhancedPrompt() : runPrompt());
+          void runPrompt();
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
         }
@@ -1041,7 +1031,6 @@ export default function CompareLLMClient(): JSX.Element {
     interactivePrompt,
     canRun,
     runPrompt,
-    runEnhancedPrompt,
     performSearch,
     performMultiSearch,
     sendInteractiveMessage,
@@ -1125,7 +1114,7 @@ export default function CompareLLMClient(): JSX.Element {
                 </div>
               </div>
 
-              {/* Resizable ModelList (uses your updated component with drag handle) */}
+              {/* Resizable ModelList */}
               <ModelList
                 models={allModels}
                 selected={selected}
@@ -1168,14 +1157,14 @@ export default function CompareLLMClient(): JSX.Element {
                     type="number"
                     min={1}
                     value={globalMin ?? ""}
-                    placeholder="Model default"
+                    placeholder="optional"
                     onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
               </div>
 
-              {/* DYNAMIC: Per-model parameters render ONLY for selected models */}
+              {/* Per-model parameters (selected only) */}
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
 
@@ -1187,7 +1176,8 @@ export default function CompareLLMClient(): JSX.Element {
 
                 {selected.map((m) => {
                   const brand = getProviderType(m);
-                  const wire = getProviderWire(m);
+                  const provKey = getProviderKey(m);
+                  const wire: ProviderWire = uiWireForProviderKey(provKey); // UI-only
                   const isExpanded = expandedModels.has(m);
                   const hasParams = modelParams[m] && Object.keys(modelParams[m]).length > 0;
 
@@ -1288,7 +1278,7 @@ export default function CompareLLMClient(): JSX.Element {
 
                           <ProviderParameterEditor
                             model={m}
-                            providerWire={wire}
+                            providerWire={wire} // UI-only; backend no longer uses wire
                             params={modelParams[m] || {}}
                             onUpdate={(params) =>
                               setModelParams((prev) => ({
@@ -1322,7 +1312,7 @@ export default function CompareLLMClient(): JSX.Element {
 
               <button
                 onClick={() => {
-                  void executePrompt();
+                  void runPrompt();
                 }}
                 disabled={!canRun}
                 className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"

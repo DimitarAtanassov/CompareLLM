@@ -6,3 +6,12 @@ pyyaml
 numpy
 pydantic_settings
 python-multipart
+langchain
+langchain-core
+langchain-community
+langchain-anthropic
+langchain-openai
+langchain-google-genai 
+langchain-ollama
+langchain-cohere
+langchain-deepseek

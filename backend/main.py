@@ -1,117 +1,87 @@
-# backend/main.py
-import os
-import asyncio
+# main.py
+from __future__ import annotations
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Any, Dict
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Master router (chat/embed/health/utils + legacy shims)
-from api.router import router as api_router
+from core.config_loader import load_config
+from core.model_registry import ModelRegistry
+from core.model_factory import build_chat_model
 
-# Registry + adapters
-from providers.registry import ModelRegistry
-from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
-from providers.adapters.embedding_adapter import EmbeddingAdapter
-
-# Services
-from services.enhanced_chat_service import EnhancedChatService
-from services.embedding_service import EmbeddingService
-from services.dataset_service import DatasetService
-from services.search_services import SearchService  # or services.search_service if that's your filename
-
-# Storage backend (memory store)
-MemoryStorageBackend = None
-try:
-    from storage.memory_store import MemoryStorageBackend as _MSB
-    MemoryStorageBackend = _MSB
-except Exception:
-    try:
-        # Fallback path if your file lives elsewhere but same import path
-        from storage.memory_store import MemoryStorageBackend as _MSB
-        MemoryStorageBackend = _MSB
-    except Exception:
-        pass
-
+# Routers
+from routers import providers  # your /providers endpoints
+from routers import chat
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # ---------- Startup ----------
-    # CORS is middleware so it stays in create_app(); all other state goes here.
-    # 1) Registry
-    models_yaml_path = os.getenv("MODELS_YAML", "/config/models.yaml")
-    app.state.registry = ModelRegistry.from_path(models_yaml_path)
+    # ---- Startup ----
+    cfg: Dict[str, Any] = load_config()  # reads config/models.yaml
+    
+    app.state.config = cfg
+    print(f"[startup] Loaded config: {list(cfg.keys())}")  # debug
 
-    # 2) Adapters
-    app.state.chat_adapter = EnhancedChatAdapter()
-    app.state.embedding_adapter = EmbeddingAdapter()
+    reg = ModelRegistry()
 
-    # 3) Storage
-    if MemoryStorageBackend is None:
-        raise RuntimeError(
-            "No MemoryStorageBackend found. Ensure storage/memory_store.py defines MemoryStorageBackend."
-        )
-    storage = MemoryStorageBackend()
+    providers_cfg = (cfg.get("providers") or {})
+    print(f"[startup] Found {len(providers_cfg)} providers in config")  # debug
 
-    # 4) Services (singletons)
-    registry = app.state.registry
-    chat_adapter = app.state.chat_adapter
-    embedding_adapter = app.state.embedding_adapter
+    count = 0
+    for pkey, pcfg in providers_cfg.items():
+        print(f"[startup] Initializing provider: {pkey} | keys={list(pcfg.keys())}")  # debug
+        for m in pcfg.get("models") or []:
+            print(f"    -> Building model: {m}")  # debug
+            try:
+                model_obj = build_chat_model(pkey, pcfg, m)
+                reg.add(pkey, m, model_obj)
+                print(f"    ✅ Added model '{m}' for provider '{pkey}' to registry")  # debug
+                count += 1
+            except Exception as e:
+                print(f"    ❌ Failed to build model '{m}' for provider '{pkey}': {e}")  # debug
 
-    chat = EnhancedChatService(registry=registry, chat_adapter=chat_adapter)
-    embedding = EmbeddingService(registry=registry, embedding_adapter=embedding_adapter)
-    dataset = DatasetService(registry=registry, embedding_service=embedding, storage=storage)
-    search = SearchService(registry=registry, embedding_service=embedding, storage=storage)
+    app.state.registry = reg
+    print(f"[startup] Initialized {count} chat models across {len(providers_cfg)} providers")  # debug
 
-    # DI map used by routes
-    app.state.services = {
-        "chat": chat,
-        "embedding": embedding,
-        "dataset": dataset,
-        "search": search,
-    }
-    # Back-compat attributes some routers expect
-    app.state.embedding_service = embedding
-    app.state.search_service = search
-    app.state.memory_store = storage
+    # (Optionally) init embeddings similarly here
 
-    # Hand control to the app (serving)
     try:
         yield
     finally:
-        # ---------- Shutdown ----------
-        try:
-            closer = getattr(app.state.memory_store, "close", None)
-            if callable(closer):
-                res = closer()
-                if asyncio.iscoroutine(res):
-                    await res
-        except Exception:
-            pass
+        # ---- Shutdown ----
+        print("[shutdown] Application shutting down, cleaning up models...")  # debug
+        # If any models need cleanup, do it here.
+        pass
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(
-        title="LLM Playground (Enhanced)",
-        version="2.0",
-        lifespan=lifespan,   # <- modern FastAPI lifecycle
-    )
+app = FastAPI(title="CompareLLM", version="0.1.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # frontend origin
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-    # CORS (open for dev; tighten in prod)
-    allow = os.getenv("CORS_ALLOW_ORIGINS")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=allow.split(",") if allow else ["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+# Routers
+app.include_router(providers.router)
+app.include_router(chat.router)
 
-    # Mount all API routes
-    app.include_router(api_router)
-    return app
+# Optional: quick health check and inventory
+@app.get("/health")
+def health():
+    print("[health] Health check called")  # debug
+    return {"ok": True}
+
+@app.get("/inventory")
+def inventory():
+    reg: ModelRegistry = app.state.registry
+    models = sorted(list(reg.keys()))
+    print(f"[inventory] Returning {len(models)} models: {models}")  # debug
+    return {"models": models}
 
 
-app = create_app()
-# Run: uvicorn backend.main:app --reload
+if __name__ == "__main__":
+    import uvicorn
+    print("[main] Starting uvicorn server on 0.0.0.0:8000")  # debug
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
