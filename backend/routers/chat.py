@@ -55,6 +55,37 @@ class ProviderOllamaParams(BaseModel):
     num_ctx: Optional[int] = None
     repeat_penalty: Optional[float] = None
 
+class ProviderCohereParams(BaseModel):
+    stop_sequences: Optional[List[str]] = None
+    seed: Optional[int] = Field(default=None, ge=0, le=18446744073709552000)
+    frequency_penalty: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    presence_penalty: Optional[float]  = Field(default=None, ge=0.0, le=1.0)
+    k: Optional[int] = Field(default=None, ge=0, le=500)
+    p: Optional[float] = Field(default=None, ge=0.01, le=0.99)
+    logprobs: Optional[bool] = None
+    #raw_prompting: Optional[bool] = None
+
+class ProviderCerebrasParams(BaseModel):
+    # OpenAI-wire compatible knobs
+    top_p: Optional[float] = None
+    frequency_penalty: Optional[float] = None
+    presence_penalty: Optional[float] = None
+    seed: Optional[int] = None
+    stop: Optional[List[str]] = None
+
+    # JSON mode (OpenAI-style): {"type": "json_object"}
+    response_format: Optional[Dict[str, Any]] = None
+
+    # Tool use (if you bind tools in your adapter): "auto" | "none" | "any" | <tool name>
+    tool_choice: Optional[str] = None
+
+class ProviderDeepseekParams(BaseModel):
+    frequency_penalty:Optional[float] = Field(default=None, ge=-2.0, le=2.0)
+    presence_penalty: Optional[float] = Field(default=None, ge=-2.0, le=2.0)
+    top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    logprobs: Optional[bool]  = None
+    top_logprobs: Optional[int]   = Field(default=None, ge=0, le=20)
+
 class ChatRequest(BaseModel):
     prompt: str
     selections: List[ModelSelection]
@@ -69,9 +100,11 @@ class ChatRequest(BaseModel):
     openai_params: Optional[ProviderOpenAIParams] = None
     gemini_params: Optional[ProviderGeminiParams] = None
     ollama_params: Optional[ProviderOllamaParams] = None
+    cohere_params: Optional[ProviderCohereParams] = None
+    deepseek_params: Optional[ProviderDeepseekParams] = None
+    cerebras_params: Optional[ProviderCerebrasParams] = None
 
     model_params: Optional[Dict[str, Dict[str, Any]]] = None
-
 
 # ---------- Helpers ----------
 
@@ -119,6 +152,8 @@ def _merge_params(base: Dict[str, Any], extra: Optional[Dict[str, Any]]) -> Dict
                 out[k] = v
     return out
 
+# chat.py
+
 def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
     common: Dict[str, Any] = {}
     if req.temperature is not None:
@@ -129,8 +164,10 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
         common["min_tokens"] = req.min_tokens
 
     provider_group: Dict[str, Any] = {}
+
     if sel.provider == "openai" and req.openai_params:
         provider_group.update(req.openai_params.model_dump(exclude_none=True))
+
     elif sel.provider == "anthropic" and req.anthropic_params:
         ap = req.anthropic_params
         if ap.thinking_enabled:
@@ -142,20 +179,34 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
             v = getattr(ap, k)
             if v is not None:
                 provider_group[k] = v
+
     elif sel.provider == "gemini" and req.gemini_params:
         gp = req.gemini_params.model_dump(exclude_none=True)
         if "max_tokens" in common:
             provider_group["max_output_tokens"] = common.pop("max_tokens")
         provider_group.update(gp)
+
     elif sel.provider == "ollama" and req.ollama_params:
         ok = req.ollama_params.model_dump(exclude_none=True)
         if ok:
             provider_group["model_kwargs"] = ok
 
+    elif sel.provider == "cohere" and req.cohere_params:
+        provider_group.update(req.cohere_params.model_dump(exclude_none=True))
+    
+    elif sel.provider == "deepseek" and req.deepseek_params:
+        provider_group.update(req.deepseek_params.model_dump(exclude_none=True))
+
+    elif sel.provider == "cerebras" and req.cerebras_params:
+        cp = req.cerebras_params.model_dump(exclude_none=True)
+        # If the frontend ever sends "stop" as List[str], pass through;
+        # both ChatCerebras and OpenAI-wire accept it.
+        provider_group.update(cp)
+
+    # Per-model overrides (your existing pattern)
     per_model = (req.model_params or {}).get(sel.model) or {}
-    if sel.provider == "gemini" and "max_tokens" in per_model:
-        per_model = dict(per_model)
-        per_model["max_output_tokens"] = per_model.pop("max_tokens")
+
+    # Gemini rename already handled above; nothing special for Cohere
 
     bound_kwargs = _merge_params(_merge_params(common, provider_group), per_model)
 
@@ -166,6 +217,7 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
     print(f"    FINAL bound_kwargs={bound_kwargs}")
 
     return chat_model.bind(**bound_kwargs)
+
 
 def _make_chain(chat_model: Any, prompt_tmpl: ChatPromptTemplate):
     return prompt_tmpl | chat_model | StrOutputParser()

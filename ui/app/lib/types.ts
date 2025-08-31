@@ -1,6 +1,6 @@
 // lib/types.ts
 // lib/types.ts
-export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "cohere" | "unknown";
+export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "cohere" | "unknown" | "deepseek";
 
 export type ProviderBrand =
   | "openai"
@@ -49,6 +49,13 @@ export type PerModelParam = {
   mirostat_tau?: number;
   num_ctx?: number;
   repeat_penalty?: number;
+  // Cohere
+  k?: number;
+  p?: number;
+  logprobs?: boolean;
+  raw_prompting?: boolean;
+  //DeepSeek
+  top_logprobs?: number; 
 };
 
 export type ModelParamsMap = Record<string, PerModelParam>;

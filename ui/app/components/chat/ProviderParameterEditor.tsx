@@ -115,7 +115,113 @@ export default function ProviderParameterEditor({
       </div>
     );
   }
+  if (providerWire === "cohere") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-fuchsia-600 dark:text-fuchsia-400">Cohere Parameters</h4>
 
+        <div className="grid grid-cols-2 gap-3">
+          <Num label="k (top-k)" val={params.k} min={0} max={500}
+               onChange={(n)=>updateParam("k", n)} placeholder="0 (disabled)" />
+          <Num label="p (top-p)" val={params.p} min={0.01} max={0.99} step={0.01}
+               onChange={(n)=>updateParam("p", n)} placeholder="0.75" />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Num label="Frequency Penalty" val={params.frequency_penalty} min={0} max={1} step={0.01}
+               onChange={(n)=>updateParam("frequency_penalty", n)} placeholder="0.0" />
+          <Num label="Presence Penalty" val={params.presence_penalty} min={0} max={1} step={0.01}
+               onChange={(n)=>updateParam("presence_penalty", n)} placeholder="0.0" />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Num label="Seed" val={params.seed} min={0}
+               onChange={(n)=>updateParam("seed", n)} placeholder="42" />
+        </div>
+
+        <div>
+          <label className="block text-xs font-medium mb-1">Stop Sequences (comma-separated)</label>
+          <input
+            type="text"
+            value={fmtStops(params.stop_sequences as string[] | undefined)}
+            onChange={(e)=>updateParam("stop_sequences", parseStops(e.target.value))}
+            className="w-full rounded-md border p-2 border-fuchsia-200 dark:border-fuchsia-500/40 bg-white dark:bg-zinc-900 text-sm"
+            placeholder="###, END, Human:"
+          />
+        </div>
+
+        <label className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={!!params.raw_prompting}
+            onChange={(e)=>updateParam("raw_prompting", e.target.checked)}
+            className="accent-fuchsia-600 dark:accent-fuchsia-400"
+          />
+          <span className="text-sm font-medium">Raw Prompting (no pre-processing)</span>
+        </label>
+      </div>
+    );
+  }
+
+  if (providerWire === "deepseek") {
+    return (
+      <div className="space-y-3">
+        <h4 className="text-sm font-semibold text-cyan-600 dark:text-cyan-400">DeepSeek Parameters</h4>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Num
+            label="Frequency Penalty"
+            val={params.frequency_penalty}
+            min={-2}
+            max={2}
+            step={0.1}
+            onChange={(n) => updateParam("frequency_penalty", n)}
+            placeholder="0.0"
+          />
+          <Num
+            label="Presence Penalty"
+            val={params.presence_penalty}
+            min={-2}
+            max={2}
+            step={0.1}
+            onChange={(n) => updateParam("presence_penalty", n)}
+            placeholder="0.0"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <Num
+            label="Top-P"
+            val={params.top_p}
+            min={0}
+            max={1}
+            step={0.01}
+            onChange={(n) => updateParam("top_p", n)}
+            placeholder="1.0"
+          />
+          <div>
+            <label className="block text-xs font-medium mb-1">Logprobs</label>
+            <input
+              type="checkbox"
+              checked={!!params.logprobs}
+              onChange={(e) => updateParam("logprobs", e.target.checked)}
+              className="accent-cyan-600 dark:accent-cyan-400"
+            />
+          </div>
+        </div>
+
+        <Num
+          label="Top Logprobs"
+          val={params.top_logprobs}
+          min={0}
+          max={20}
+          step={1}
+          onChange={(n) => updateParam("top_logprobs", n)}
+          placeholder="0"
+        />
+      </div>
+    );
+}
   return null;
 }
 

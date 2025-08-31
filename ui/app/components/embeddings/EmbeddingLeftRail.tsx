@@ -92,7 +92,7 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
     deleteDataset,
   } = props;
 
-  // --- Drag-to-resize for Embedding Models list (matches ModelList styling/behavior) ---
+  // --- Drag-to-resize for Embedding Models list ---
   const MIN_H = 140;
   const MAX_H = 520;
   const [embedListHeight, setEmbedListHeight] = useState<number>(260);
@@ -137,7 +137,6 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
           </div>
         </div>
 
-        {/* Resizable list (same UX as ModelList) */}
         <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 mt-2">
           <div
             className="overflow-auto p-2 grid grid-cols-1 gap-1"
@@ -177,7 +176,7 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
             })}
           </div>
 
-          {/* Drag handle (matches ModelList) */}
+          {/* Drag handle */}
           <div
             onMouseDown={beginDrag}
             className="relative h-3 w-full cursor-row-resize select-none"
@@ -246,7 +245,6 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
           >
             <option value="">-- Select a dataset --</option>
             {datasets.map((d) => (
-              // 🔄 Removed (document_count) from the label per your request
               <option key={d.dataset_id} value={d.dataset_id}>
                 {d.dataset_id}
               </option>
@@ -310,7 +308,7 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
       <div className="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4">
         <h3 className="text-sm font-semibold">Compare Across Selected Models</h3>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Uses the models you checked above. (Dataset(s) required for this self-dataset compare endpoint.)
+          Uses the models you checked above. (Upload dataset(s) first.)
         </p>
         <input
           type="text"

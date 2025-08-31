@@ -10,6 +10,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_cohere import ChatCohere
 from langchain_deepseek import ChatDeepSeek  # optional, if you want native DeepSeek
+from langchain_cerebras import ChatCerebras
 
 # Notes on providers:
 # - OpenAI-compatible (wire="openai") providers (e.g., deepseek, cerebras) can use ChatOpenAI with base_url.
@@ -37,30 +38,33 @@ def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
 
     # ---- Anthropic ----
-    if ptype == "anthropic":
+    elif ptype == "anthropic":
         return ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers)
 
     # ---- Gemini ----
-    if ptype == "gemini":
+    elif ptype == "gemini":
         # ChatGoogleGenerativeAI(api_key=...) is expected; base_url is not used.
         return ChatGoogleGenerativeAI(model=model_name, api_key=api_key)
 
     # ---- Ollama (local) ----
-    if ptype == "ollama":
+    elif ptype == "ollama":
         # base_url is needed (e.g., http://localhost:11434); no api_key required
         return ChatOllama(model=model_name, base_url=base_url)
 
     # ---- Cohere ----
-    if ptype == "cohere":
+    elif ptype == "cohere":
         return ChatCohere(model=model_name, api_key=api_key)
 
     # ---- DeepSeek ----
     # Option A: DeepSeek native LC integration (langchain-deepseek)
-    if ptype == "deepseek" and wire is None:
+    elif ptype == "deepseek" and wire is None:
         return ChatDeepSeek(model=model_name, api_key=api_key)
+    
+    elif ptype == "cerebras" and wire is None:
+        return ChatCerebras(model=model_name, api_key=api_key, base_url=base_url)
 
     # Option B: Providers that are OpenAI-compatible ("wire": "openai"), e.g. deepseek, cerebras, others
-    if wire == "openai":
+    elif wire == "openai":
         # Use ChatOpenAI with a custom base_url & key
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
 

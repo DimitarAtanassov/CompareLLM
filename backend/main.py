@@ -6,6 +6,11 @@ from typing import AsyncIterator, Any, Dict
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers import embeddings
+from core.dataset_catalog import DatasetCatalog
+from core.embedding_factory import build_embedding_model
+from core.embedding_registry import EmbeddingRegistry
+from services.embedding_services import EmbeddingService
 from core.config_loader import load_config
 from core.model_registry import ModelRegistry
 from core.model_factory import build_chat_model
@@ -13,6 +18,10 @@ from core.model_factory import build_chat_model
 # Routers
 from routers import providers  # your /providers endpoints
 from routers import chat
+
+
+def _log(msg: str) -> None:
+    print(f"[Main] {msg}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -43,7 +52,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = reg
     print(f"[startup] Initialized {count} chat models across {len(providers_cfg)} providers")  # debug
 
-    # (Optionally) init embeddings similarly here
+    emb_reg = EmbeddingRegistry()
+    providers_cfg = (cfg.get("providers") or {})
+    emb_count = 0
+    for pkey, pcfg in providers_cfg.items():
+        for em in pcfg.get("embedding_models") or []:
+            try:
+                emb = build_embedding_model(pkey, pcfg, em)
+                emb_reg.add_embedding(pkey, em, emb)
+                emb_count += 1
+            except Exception as e:
+                _log(f"❌ Embedding build failed for {pkey}:{em} -> {e}")
+
+    app.state.embedding_registry = emb_reg
+    app.state.embedding_service = EmbeddingService(emb_reg)
+    app.state.dataset_catalog = DatasetCatalog()
+    _log(f"Initialized embeddings -> {emb_count} embedding model(s) available")
 
     try:
         yield
@@ -66,6 +90,9 @@ app.add_middleware(
 # Routers
 app.include_router(providers.router)
 app.include_router(chat.router)
+app.include_router(providers.router)
+app.include_router(chat.router)
+app.include_router(embeddings.router)  
 
 # Optional: quick health check and inventory
 @app.get("/health")

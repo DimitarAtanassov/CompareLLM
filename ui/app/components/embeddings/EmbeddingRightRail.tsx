@@ -1,3 +1,4 @@
+// components/embeddings/EmbeddingRightRail.tsx
 "use client";
 
 import { MultiSearchResponse, ProviderBrand, SearchResult } from "@/app/lib/types";
@@ -6,7 +7,6 @@ import Spinner from "../ui/Spinner";
 import LoadingBar from "../ui/LoadingBar";
 import { PROVIDER_BADGE_BG } from "@/app/lib/colors";
 import { primarySnippet, redactResult } from "@/app/lib/utils";
-
 
 type EmbeddingRightRailProps = {
   embedView: "single" | "compare";
@@ -158,7 +158,7 @@ export default function EmbeddingRightRail({
             <h3 className="text-sm font-semibold">Multi-model comparison</h3>
             {isComparing && <Spinner />}
           </div>
-          {isComparing && <LoadingBar />}
+        {isComparing && <LoadingBar />}
 
           {!multiSearchResults && !isComparing && (
             <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">

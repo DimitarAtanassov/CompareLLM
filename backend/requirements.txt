@@ -1,17 +1,35 @@
+# Core framework
 fastapi
 uvicorn[standard]
+
+# HTTP & serialization
 httpx
 pydantic
-pyyaml
-numpy
-pydantic_settings
+pydantic-settings
 python-multipart
+pyyaml
+
+# Math / embeddings
+numpy
+
+# LangChain core
 langchain
 langchain-core
 langchain-community
+
+# LangChain providers (chat + embeddings)
 langchain-anthropic
 langchain-openai
-langchain-google-genai 
+langchain-google-genai
 langchain-ollama
 langchain-cohere
 langchain-deepseek
+langchain-voyageai
+langchain-cerebras
+# Optional: logging / debugging (recommended)
+loguru
+
+# (Optional) Vector DBs — uncomment the one(s) you use
+# faiss-cpu
+# chromadb
+# qdrant-client
