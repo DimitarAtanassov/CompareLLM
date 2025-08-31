@@ -57,10 +57,10 @@ def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name
 
     # ---- DeepSeek ----
     # Option A: DeepSeek native LC integration (langchain-deepseek)
-    elif ptype == "deepseek" and wire is None:
+    elif ptype == "deepseek":
         return ChatDeepSeek(model=model_name, api_key=api_key)
     
-    elif ptype == "cerebras" and wire is None:
+    elif ptype == "cerebras":
         return ChatCerebras(model=model_name, api_key=api_key, base_url=base_url)
 
     # Option B: Providers that are OpenAI-compatible ("wire": "openai"), e.g. deepseek, cerebras, others

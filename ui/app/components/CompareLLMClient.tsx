@@ -25,7 +25,7 @@ import { PROVIDER_BADGE_BG } from "../lib/colors";
 import EmbeddingLeftRail from "./embeddings/EmbeddingLeftRail";
 import EmbeddingRightRail from "./embeddings/EmbeddingRightRail";
 
-// ---- NEW: embeddings API helpers ----
+// ---- embeddings API helpers ----
 import {
   listEmbeddingModels,
   listStores,
@@ -35,7 +35,6 @@ import {
   toDocsFromJsonArray,
   makeStoreId,
   groupStoresByDataset,
-  storesForModel,
   deleteStore,
   type IndexDoc,
 } from "../lib/utils";
@@ -51,6 +50,7 @@ const PREFIX_TO_BRAND: Record<string, ProviderBrand> = {
   cerebras: "cerebras",
   deepseek: "deepseek",
 };
+
 // === NDJSON event shape from /chat/stream ===
 type NDJSONEvent =
   | { type: "start"; provider: string; model: string }
@@ -62,6 +62,7 @@ type NDJSONEvent =
 type Selection = { provider: string; model: string };
 type ChatMsg = { role: string; content: string };
 type WithDatasetId = SearchResult & { _dataset_id?: string };
+
 // --- Group param shapes (same as backend expects) ---
 interface AnthropicGroupParams {
   thinking_enabled?: boolean;
@@ -280,7 +281,7 @@ export default function CompareLLMClient(): JSX.Element {
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
 
-  // ---- NEW: embeddings state
+  // ---- embeddings state
   const [allEmbeddingModels, setAllEmbeddingModels] = useState<string[]>([]);
   const [stores, setStores] = useState<Record<string, string>>({}); // {storeId: embeddingKey}
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -299,6 +300,7 @@ export default function CompareLLMClient(): JSX.Element {
   // Embeddings UI state
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
+  const [selectedCompareDataset, setSelectedCompareDataset] = useState<string>(""); // NEW: compare dataset
   const [selectedSearchModel, setSelectedSearchModel] = useState<string>("");
   const [uploadingDataset, setUploadingDataset] = useState(false);
   const [jsonInput, setJsonInput] = useState<string>("");
@@ -327,6 +329,23 @@ export default function CompareLLMClient(): JSX.Element {
   const [topKCompare, setTopKCompare] = useState<number>(5);
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
   const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
+
+  // ==== LIVE REFS to avoid stale-closure on immediate Run after typing/changing params ====
+  const modelParamsRef = useRef<ModelParamsMap>({});
+  const globalTempRef = useRef<number | undefined>(undefined);
+  const globalMaxRef = useRef<number | undefined>(undefined);
+  const globalMinRef = useRef<number | undefined>(undefined);
+  const promptRefLive = useRef<string>("");
+  const selectedRef = useRef<string[]>([]);
+  const modelChatsRef = useRef<Record<string, ModelChat>>({});
+
+  useEffect(() => { modelParamsRef.current = modelParams; }, [modelParams]);
+  useEffect(() => { globalTempRef.current = globalTemp; }, [globalTemp]);
+  useEffect(() => { globalMaxRef.current = globalMax; }, [globalMax]);
+  useEffect(() => { globalMinRef.current = globalMin; }, [globalMin]);
+  useEffect(() => { promptRefLive.current = prompt; }, [prompt]);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  useEffect(() => { modelChatsRef.current = modelChats; }, [modelChats]);
 
   // ==== MEMO MAPS ====
   const modelToBrand = useMemo(() => {
@@ -421,7 +440,7 @@ export default function CompareLLMClient(): JSX.Element {
         setProviders(normalized);
         setAllModels([...new Set(normalized.flatMap((p) => p.models ?? []))].sort());
 
-        // ---- NEW: embedding models & stores from /embeddings
+        // Embedding models & stores from /embeddings
         const [embM, storesRes] = await Promise.all([listEmbeddingModels(), listStores()]);
         setAllEmbeddingModels(embM.embedding_models || []);
         setStores(storesRes.stores || {});
@@ -557,7 +576,7 @@ export default function CompareLLMClient(): JSX.Element {
   }, [searchQuery, selectedDataset, selectedSearchModel, topKSingle]);
 
   // =============================
-  // Embeddings: multi-model compare (fan-out)
+  // Embeddings: multi-model compare (NEW: hits backend /embeddings/compare)
   // =============================
   const performMultiSearch = useCallback(async () => {
     if (!compareQuery.trim()) {
@@ -568,6 +587,10 @@ export default function CompareLLMClient(): JSX.Element {
       alert("Select at least one embedding model (left rail) to compare.");
       return;
     }
+    if (!selectedCompareDataset.trim()) {
+      alert("Select a dataset for comparison.");
+      return;
+    }
 
     const started = Date.now();
     setIsComparing(true);
@@ -575,44 +598,27 @@ export default function CompareLLMClient(): JSX.Element {
     const myId = ++requestIdRef.current;
 
     try {
-      const resultsByModel: Record<string, { items: SearchResult[]; error?: string }> = {};
+      const res = await fetch(`${API_BASE}/embeddings/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataset_id: selectedCompareDataset.trim(),
+          embedding_models: selectedEmbeddingModels.map((s) => s.trim()),
+          query: compareQuery.trim(),
+          k: topKCompare,
+        }),
+      });
 
-      await Promise.all(
-        selectedEmbeddingModels.map(async (embeddingKey) => {
-          const sids = storesForModel(stores, embeddingKey); // all stores that use this model
-          const collected: SearchResult[] = [];
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
 
-          await Promise.all(
-            sids.map(async (sid) => {
-              try {
-                const { matches } = await queryStore(sid, compareQuery.trim(), { k: topKCompare, with_scores: true });
-                const datasetId = sid.split("::", 1)[0] ?? sid;
-                const mapped: WithDatasetId[] = matches.map((m) => {
-                  const meta = (m.metadata ?? {}) as Record<string, unknown>;
-                  const row: WithDatasetId = {
-                    ...meta,
-                    text: m.page_content,
-                    similarity_score: typeof m.score === "number" ? m.score : 0, // <-- always set
-                    _dataset_id: datasetId,
-                  };
-                  return row;
-                });
-                collected.push(...mapped);
-              } catch (e) {
-                console.warn("queryStore failed for", sid, e);
-              }
-            })
-          );
-
-          collected.sort((a, b) => (b.similarity_score ?? 0) - (a.similarity_score ?? 0));
-          resultsByModel[embeddingKey] = { items: collected.slice(0, topKCompare) };
-        })
-      );
-
+      const json = (await res.json()) as MultiSearchResponse;
+      // If backend doesn't include duration, compute client-side as a fallback:
       const payload: MultiSearchResponse = {
-        query: compareQuery.trim(),
-        duration_ms: Date.now() - started,
-        results: resultsByModel,
+        ...json,
+        duration_ms: typeof json.duration_ms === "number" ? json.duration_ms : Date.now() - started,
       };
 
       if (myId === requestIdRef.current) setMultiSearchResults(payload);
@@ -625,7 +631,7 @@ export default function CompareLLMClient(): JSX.Element {
     } finally {
       if (myId === requestIdRef.current) setIsComparing(false);
     }
-  }, [compareQuery, selectedEmbeddingModels, topKCompare, stores]);
+  }, [API_BASE, compareQuery, selectedEmbeddingModels, selectedCompareDataset, topKCompare]);
 
   // =============================
   // Embeddings: delete dataset (delete all its stores)
@@ -638,15 +644,16 @@ export default function CompareLLMClient(): JSX.Element {
         await Promise.allSettled(toDelete.map((sid) => deleteStore(sid)));
         await refreshStoresAndDatasets();
         if (selectedDataset === id) setSelectedDataset("");
+        if (selectedCompareDataset === id) setSelectedCompareDataset("");
       } catch (err) {
         console.error("Delete failed:", err);
       }
     },
-    [stores, refreshStoresAndDatasets, selectedDataset]
+    [stores, refreshStoresAndDatasets, selectedDataset, selectedCompareDataset]
   );
 
   // =============================
-  // Chat tab (unchanged)
+  // Chat tab
   // =============================
   const toggleModel = (m: string) =>
     setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
@@ -684,14 +691,13 @@ export default function CompareLLMClient(): JSX.Element {
     });
   }, []);
 
-  // Interactive chat helpers (unchanged except using getProviderKey)
   const openModelChat = useCallback(
     (model: string) => {
       setActiveModel(model);
       setModelChats((prev) => {
         if (prev[model]) return prev;
         const initial: ModelChat["messages"] = [];
-        if (prompt.trim()) initial.push({ role: "user", content: prompt.trim(), timestamp: Date.now() });
+        if (promptRefLive.current.trim()) initial.push({ role: "user", content: promptRefLive.current.trim(), timestamp: Date.now() });
         const modelAnswer = answers[model];
         if (modelAnswer?.answer && !modelAnswer.error) {
           initial.push({ role: "assistant", content: modelAnswer.answer, timestamp: Date.now() });
@@ -699,15 +705,17 @@ export default function CompareLLMClient(): JSX.Element {
         return { ...prev, [model]: { messages: initial, isStreaming: false, currentResponse: "" } };
       });
     },
-    [answers, prompt]
+    [answers]
   );
   const closeModelChat = useCallback(() => {
     setActiveModel(null);
     interactiveAbortRef.current?.abort();
   }, []);
-const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
-  pruneUndefBrandUtils(obj);
 
+  const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
+    pruneUndefBrandUtils(obj);
+
+  // === Interactive chat (uses refs to avoid stale state) ===
   const sendInteractiveMessage = useCallback(async () => {
     if (!activeModel || !interactivePrompt.trim()) return;
     const message = interactivePrompt.trim();
@@ -727,7 +735,7 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
     interactiveAbortRef.current = controller;
 
     try {
-      const currentChat = modelChats[activeModel] || { messages: [] as ModelChat["messages"] };
+      const currentChat = modelChatsRef.current[activeModel] || { messages: [] as ModelChat["messages"] };
       const conversationHistory = [
         ...currentChat.messages,
         { role: "user" as const, content: message, timestamp: Date.now() },
@@ -740,10 +748,10 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
         providerOf: (m) => getProviderKey(m),
         history: apiMessages.slice(0, -1),
         system: undefined,
-        temperature: modelParams[activeModel]?.temperature ?? globalTemp,
-        max_tokens: modelParams[activeModel]?.max_tokens ?? globalMax,
-        min_tokens: modelParams[activeModel]?.min_tokens ?? globalMin,
-        modelParams: { [activeModel]: modelParams[activeModel] || {} },
+        temperature: modelParamsRef.current[activeModel]?.temperature ?? globalTempRef.current,
+        max_tokens: modelParamsRef.current[activeModel]?.max_tokens ?? globalMaxRef.current,
+        min_tokens: modelParamsRef.current[activeModel]?.min_tokens ?? globalMinRef.current,
+        modelParams: { [activeModel]: modelParamsRef.current[activeModel] || {} },
       });
 
       const res = await fetch(`${API_BASE}/chat/batch`, {
@@ -786,16 +794,18 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, modelChats, modelParams, getProviderKey, globalTemp, globalMax, globalMin]);
+  }, [activeModel, interactivePrompt, getProviderKey]);
 
-  // Providers-only chat streaming bits (unchanged except getProviderKey)
+  // Providers-only chat streaming bits
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
+
   const resetRun = useCallback(() => {
-    setAnswers(Object.fromEntries(selected.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])) as AskAnswers);
+    setAnswers(Object.fromEntries(selectedRef.current.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])) as AskAnswers);
     setStartedAt(Date.now());
     setEndedAt(null);
-  }, [selected]);
+  }, []);
 
+  // === Run (uses refs so you don't have to click twice) ===
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
     streamAbortRef.current?.abort();
@@ -804,7 +814,7 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
 
     resetRun();
     setIsRunning(true);
-    setLastRunPrompt(prompt.trim());
+    setLastRunPrompt(promptRefLive.current.trim());
 
     const startedAt = Date.now();
     const modelStart: Record<string, number> = {};
@@ -841,15 +851,15 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
 
     try {
       const body = buildChatRequestBody({
-        prompt: prompt.trim(),
-        selected,
+        prompt: promptRefLive.current.trim(),
+        selected: selectedRef.current,
         providerOf: (m) => getProviderKey(m),
         history: undefined,
         system: undefined,
-        temperature: globalTemp,
-        max_tokens: globalMax,
-        min_tokens: globalMin,
-        modelParams,
+        temperature: globalTempRef.current,
+        max_tokens: globalMaxRef.current,
+        min_tokens: globalMinRef.current,
+        modelParams: modelParamsRef.current,
       });
 
       const res = await fetch(`${API_BASE}/chat/stream`, {
@@ -898,11 +908,12 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
       setIsRunning(false);
       streamAbortRef.current = null;
     }
-  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, resetRun, getProviderKey]);
+  }, [canRun, resetRun, getProviderKey]);
 
+  // === Retry single model (uses refs)
   const retryModel = useCallback(
     async (model: string) => {
-      const retryPrompt = (lastRunPrompt || prompt).trim();
+      const retryPrompt = (lastRunPrompt || promptRefLive.current).trim();
       if (!retryPrompt) {
         alert("No prompt to retry. Please enter a prompt first.");
         return;
@@ -918,10 +929,10 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
           providerOf: (m) => getProviderKey(m),
           history: undefined,
           system: undefined,
-          temperature: modelParams[model]?.temperature ?? globalTemp,
-          max_tokens: modelParams[model]?.max_tokens ?? globalMax,
-          min_tokens: modelParams[model]?.min_tokens ?? globalMin,
-          modelParams: { [model]: modelParams[model] || {} },
+          temperature: modelParamsRef.current[model]?.temperature ?? globalTempRef.current,
+          max_tokens: modelParamsRef.current[model]?.max_tokens ?? globalMaxRef.current,
+          min_tokens: modelParamsRef.current[model]?.min_tokens ?? globalMinRef.current,
+          modelParams: { [model]: modelParamsRef.current[model] || {} },
         });
 
         const res = await fetch(`${API_BASE}/chat/stream`, {
@@ -995,7 +1006,7 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
         setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 } }));
       }
     },
-    [lastRunPrompt, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderKey]
+    [lastRunPrompt, getProviderKey]
   );
 
   const repromptFromResults = useCallback(() => {
@@ -1012,7 +1023,13 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
     const onKey = (evt: KeyboardEvent) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.shiftKey && evt.key === "Enter") {
         evt.preventDefault();
-        if (activeTab === "embedding" && compareQuery.trim() && selectedEmbeddingModels.length > 0 && datasets.length > 0) {
+        if (
+          activeTab === "embedding" &&
+          compareQuery.trim() &&
+          selectedEmbeddingModels.length > 0 &&
+          datasets.length > 0 &&
+          selectedCompareDataset
+        ) {
           void performMultiSearch();
           return;
         }
@@ -1044,6 +1061,8 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
     performMultiSearch,
     sendInteractiveMessage,
     closeModelChat,
+    compareQuery,
+    selectedCompareDataset,
   ]);
 
   // ==== RENDER ====
@@ -1188,9 +1207,13 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
                     <div key={m} className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5">
                       <div
                         className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
-                        onClick={() => setExpandedModels((prev) => {
-                          const next = new Set(prev); next.has(m) ? next.delete(m) : next.add(m); return next;
-                        })}
+                        onClick={() =>
+                          setExpandedModels((prev) => {
+                            const next = new Set(prev);
+                            next.has(m) ? next.delete(m) : next.add(m);
+                            return next;
+                          })
+                        }
                         title={`Configure ${m}`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
@@ -1215,30 +1238,50 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
                             <div>
                               <label className="block mb-1 text-xs font-medium">Temperature</label>
                               <input
-                                type="number" step={0.1} min={0} max={2}
+                                type="number"
+                                step={0.1}
+                                min={0}
+                                max={2}
                                 value={modelParams[m]?.temperature ?? ""}
                                 placeholder="↳ global / default"
-                                onChange={(e) => setModelParams((prev) => ({ ...prev, [m]: { ...prev[m], temperature: e.target.value ? Number(e.target.value) : undefined } }))}
+                                onChange={(e) =>
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: { ...prev[m], temperature: e.target.value ? Number(e.target.value) : undefined },
+                                  }))
+                                }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
                             </div>
                             <div>
                               <label className="block mb-1 text-xs font-medium">Max Tokens</label>
                               <input
-                                type="number" min={1}
+                                type="number"
+                                min={1}
                                 value={modelParams[m]?.max_tokens ?? ""}
                                 placeholder="↳ global / default"
-                                onChange={(e) => setModelParams((prev) => ({ ...prev, [m]: { ...prev[m], max_tokens: e.target.value ? Number(e.target.value) : undefined } }))}
+                                onChange={(e) =>
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: { ...prev[m], max_tokens: e.target.value ? Number(e.target.value) : undefined },
+                                  }))
+                                }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
                             </div>
                             <div>
                               <label className="block mb-1 text-xs font-medium">Min Tokens</label>
                               <input
-                                type="number" min={1}
+                                type="number"
+                                min={1}
                                 value={modelParams[m]?.min_tokens ?? ""}
                                 placeholder="optional"
-                                onChange={(e) => setModelParams((prev) => ({ ...prev, [m]: { ...prev[m], min_tokens: e.target.value ? Number(e.target.value) : undefined } }))}
+                                onChange={(e) =>
+                                  setModelParams((prev) => ({
+                                    ...prev,
+                                    [m]: { ...prev[m], min_tokens: e.target.value ? Number(e.target.value) : undefined },
+                                  }))
+                                }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
                               />
                             </div>
@@ -1333,6 +1376,9 @@ const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =
             performMultiSearch={performMultiSearch}
             isComparing={isComparing}
             deleteDataset={deleteDataset}
+            // NEW: dedicated compare dataset selector
+            selectedCompareDataset={selectedCompareDataset}
+            setSelectedCompareDataset={setSelectedCompareDataset}
           />
 
           {/* Right rail */}

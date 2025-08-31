@@ -79,7 +79,6 @@ def build_embedding_model(
         # base_url like http://localhost:11434 from your YAML.
         return OllamaEmbeddings(model=model_name, base_url=base_url)
 
-    _log(f"Build embedding OK -> {provider_key}:{model_name} (took {(perf_counter()-t0)*1000:.1f} ms)")
     # ---- Providers without embeddings in your YAML ----
     # DeepSeek & Cerebras currently have embedding_models: [] in models.yaml.
     # If you add them later via a compatible wire (e.g., openai), they’ll be covered above.

@@ -38,6 +38,19 @@ class QueryIn(BaseModel):
     lambda_mult: Optional[float] = Field(default=0.5, ge=0.0, le=1.0)
     score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
+class CompareIn(BaseModel):
+    dataset_id: str
+    embedding_models: List[str]  # e.g. ["openai:text-embedding-3-large", "cohere:embed-english-v3.0"]
+    query: str
+    k: int = Field(default=5, ge=1, le=100)
+    with_scores: bool = False
+
+    # retriever controls (match /query)
+    search_type: Optional[str] = Field(default="similarity")
+    fetch_k: Optional[int] = Field(default=20, ge=1, le=1000)
+    lambda_mult: Optional[float] = Field(default=0.5, ge=0.0, le=1.0)
+    score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
 @router.get("/models")
 def list_embedding_models(request: Request):
     svc = request.app.state.embedding_service
@@ -171,3 +184,118 @@ async def query(payload: QueryIn, request: Request):
     out = [{"page_content": d.page_content, "metadata": d.metadata} for d in docs]
     _log(f"/query retriever -> {len(out)} matches (took {(perf_counter()-t0)*1000:.1f} ms)")
     return {"matches": out}
+
+@router.post("/compare")
+async def compare_across_models(payload: CompareIn, request: Request):
+    """
+    Compare multiple embedding models **on a single dataset**.
+
+    For each embedding key, we look up the vector store id "{dataset_id}::{embedding_key}"
+    and run the same LangChain search paths used by /query:
+      - similarity (fast top-k cosine)
+      - mmr
+      - similarity_score_threshold
+    With `with_scores=True`, we attach scores (cosine similarity).
+    """
+    from core.embedding_registry import EmbeddingRegistry  # type: ignore
+
+    emb_reg: EmbeddingRegistry = request.app.state.embedding_registry
+    svc = request.app.state.embedding_service
+
+    # Helper: run one store with same logic as /query
+    async def _run_one(store_id: str) -> List[Dict[str, Any]]:
+        stype = (payload.search_type or "similarity").strip().lower()
+
+        # Fast path: similarity
+        if stype == "similarity":
+            try:
+                results = await svc.asimilarity_search(
+                    store_id,
+                    payload.query,
+                    k=payload.k,
+                    with_scores=payload.with_scores,
+                )
+            except KeyError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+
+            out: List[Dict[str, Any]] = []
+            if payload.with_scores:
+                for doc, score in results:
+                    out.append(
+                        {
+                            "page_content": doc.page_content,
+                            "metadata": doc.metadata,
+                            "score": float(score),
+                        }
+                    )
+            else:
+                for doc in results:
+                    out.append(
+                        {"page_content": doc.page_content, "metadata": doc.metadata}
+                    )
+            return out
+
+        # Retriever paths (mirror /query) :contentReference[oaicite:0]{index=0}
+        try:
+            vs = emb_reg.get_store(store_id)
+        except KeyError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+
+        search_kwargs: Dict[str, Any] = {"k": payload.k}
+        if stype == "mmr":
+            if payload.fetch_k is not None:
+                search_kwargs["fetch_k"] = payload.fetch_k
+            if payload.lambda_mult is not None:
+                search_kwargs["lambda_mult"] = payload.lambda_mult
+        elif stype == "similarity_score_threshold":
+            if payload.score_threshold is not None:
+                search_kwargs["score_threshold"] = payload.score_threshold
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported search_type '{payload.search_type}'. "
+                    "Use 'similarity', 'mmr', or 'similarity_score_threshold'."
+                ),
+            )
+
+        retriever = vs.as_retriever(search_type=stype, search_kwargs=search_kwargs)
+        docs = await retriever.ainvoke(payload.query)  # LangChain retriever path :contentReference[oaicite:1]{index=1}
+
+        if payload.with_scores:
+            # attach scores by rescoring the retriever outputs, similar to /query
+            qvec = vs.embeddings.embed_query(payload.query)
+            scored = await vs.asimilarity_search_with_score_by_vector(
+                qvec, k=max(payload.k, len(docs))
+            )
+            score_by_id: Dict[Optional[str], float] = {
+                getattr(d, "id", None): float(s) for d, s in scored
+            }
+            return [
+                {
+                    "page_content": d.page_content,
+                    "metadata": d.metadata,
+                    "score": score_by_id.get(getattr(d, "id", None)),
+                }
+                for d in docs
+            ]
+
+        return [{"page_content": d.page_content, "metadata": d.metadata} for d in docs]
+
+    # Build results per embedding key for the ONE dataset
+    out: Dict[str, Any] = {}
+    for emb_key in payload.embedding_models:
+        store_id = f"{payload.dataset_id}::{emb_key}"  # your store id convention
+        try:
+            matches = await _run_one(store_id)
+            out[emb_key] = {"items": matches[: payload.k]}
+        except HTTPException as e:
+            # return an error for that model but keep others going
+            out[emb_key] = {"items": [], "error": e.detail}
+
+    return {
+        "query": payload.query,
+        "dataset_id": payload.dataset_id,
+        "k": payload.k,
+        "results": out,
+    }

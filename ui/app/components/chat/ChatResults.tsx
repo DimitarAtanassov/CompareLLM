@@ -41,45 +41,59 @@ export default function ChatResults({
       return next;
     });
 
-  // Flash + keep green border after a run
+  // Flash + keep green border after a run (now per-model)
   const prevIsRunning = useRef<boolean>(isRunning);
   const [flashModels, setFlashModels] = useState<Set<string>>(new Set());
   const [completedModels, setCompletedModels] = useState<Set<string>>(new Set());
+  const flashTimersRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     const wasRunning = prevIsRunning.current;
 
     // New run started: clear prior visual state so we can retrigger animation later
     if (!wasRunning && isRunning) {
+      // clear any pending per-model flash timers
+      Object.values(flashTimersRef.current).forEach((t) => clearTimeout(t));
+      flashTimersRef.current = {};
       setFlashModels(new Set());
       setCompletedModels(new Set());
     }
 
-    // Run finished: mark all cards as completed, then trigger a pulse on next frame
-    let clearPulseTimer: number | undefined;
-    if (wasRunning && !isRunning) {
-      const keys = Object.keys(answers);
-      const toSet = new Set(keys);
-
-      // 1) set completed (keeps the green border)
-      setCompletedModels(toSet);
-
-      // 2) trigger pulse after layout has caught up (avoids missed animations)
-      requestAnimationFrame(() => {
-        setFlashModels(toSet);
-        clearPulseTimer = window.setTimeout(() => {
-          setFlashModels(new Set()); // remove pulse but keep green border
-        }, 900);
-      });
-    }
-
     prevIsRunning.current = isRunning;
 
-    return () => {
-      if (clearPulseTimer) clearTimeout(clearPulseTimer);
-    };
-    // Keep `answers` in deps so keys are accurate at finish time
-  }, [isRunning, answers]);
+    // no cleanup needed here; per-model timers are handled separately
+  }, [isRunning]);
+
+  // Per-model completion & pulse when that model's latency_ms appears
+  useEffect(() => {
+    for (const [model, info] of Object.entries(answers)) {
+      const done = typeof info?.latency_ms === "number" && info.latency_ms > 0;
+      if (done && !completedModels.has(model)) {
+        // mark as completed (persistent emerald border)
+        setCompletedModels((prev) => {
+          const next = new Set(prev);
+          next.add(model);
+          return next;
+        });
+        // trigger a one-shot pulse for this model only
+        setFlashModels((prev) => {
+          const next = new Set(prev);
+          next.add(model);
+          return next;
+        });
+        // schedule pulse removal
+        const timer = window.setTimeout(() => {
+          setFlashModels((prev) => {
+            const next = new Set(prev);
+            next.delete(model);
+            return next;
+          });
+          delete flashTimersRef.current[model];
+        }, 900);
+        flashTimersRef.current[model] = timer;
+      }
+    }
+  }, [answers, completedModels]);
 
   // Per-model resizable heights
   const [heights, setHeights] = useState<Record<string, number>>({});

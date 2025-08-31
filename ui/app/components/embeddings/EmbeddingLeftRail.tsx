@@ -39,13 +39,15 @@ type EmbeddingLeftRailProps = {
   isSearchingSingle: boolean;
   hasAnyDataset: boolean;
 
-  // compare
+  // compare (now with its own dataset selector)
   compareQuery: string;
   setCompareQuery: (v: string) => void;
   topKCompare: number;
   setTopKCompare: (n: number) => void;
   performMultiSearch: () => void | Promise<void>;
   isComparing: boolean;
+  selectedCompareDataset: string;
+  setSelectedCompareDataset: (v: string) => void;
 
   // datasets list actions
   deleteDataset: (id: string) => void | Promise<void>;
@@ -88,6 +90,8 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
     setTopKCompare,
     performMultiSearch,
     isComparing,
+    selectedCompareDataset,
+    setSelectedCompareDataset,
 
     deleteDataset,
   } = props;
@@ -98,22 +102,25 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
   const [embedListHeight, setEmbedListHeight] = useState<number>(260);
   const dragRef = useRef<{ startY: number; startH: number } | null>(null);
 
-  const beginDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    dragRef.current = { startY: e.clientY, startH: embedListHeight };
-    const onMove = (ev: MouseEvent) => {
-      if (!dragRef.current) return;
-      const dy = ev.clientY - dragRef.current.startY;
-      const next = Math.min(MAX_H, Math.max(MIN_H, dragRef.current.startH + dy));
-      setEmbedListHeight(next);
-    };
-    const onUp = () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
-      dragRef.current = null;
-    };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
-  }, [embedListHeight]);
+  const beginDrag = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      dragRef.current = { startY: e.clientY, startH: embedListHeight };
+      const onMove = (ev: MouseEvent) => {
+        if (!dragRef.current) return;
+        const dy = ev.clientY - dragRef.current.startY;
+        const next = Math.min(MAX_H, Math.max(MIN_H, dragRef.current.startH + dy));
+        setEmbedListHeight(next);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+        dragRef.current = null;
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [embedListHeight]
+  );
 
   return (
     <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm space-y-4">
@@ -219,7 +226,7 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
         </button>
       </div>
 
-      {/* Similarity Search */}
+      {/* Similarity Search (single-model) */}
       <div className="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4">
         <h3 className="text-sm font-semibold">Similarity Search</h3>
         <div>
@@ -304,12 +311,29 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
         </button>
       </div>
 
-      {/* Compare Across Selected Models */}
+      {/* Compare Across Selected Models (separate dataset selector) */}
       <div className="space-y-3 rounded-xl border border-zinc-200 dark:border-zinc-800 p-4">
         <h3 className="text-sm font-semibold">Compare Across Selected Models</h3>
         <p className="text-xs text-zinc-500 dark:text-zinc-400">
-          Uses the models you checked above. (Upload dataset(s) first.)
+          Uses the models you checked above. Choose a dataset below just for comparison.
         </p>
+
+        <div>
+          <label className="block text-xs font-medium mb-1">Dataset for compare</label>
+          <select
+            className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
+            value={selectedCompareDataset}
+            onChange={(e) => setSelectedCompareDataset(e.target.value)}
+          >
+            <option value="">-- Select a dataset --</option>
+            {datasets.map((d) => (
+              <option key={d.dataset_id} value={d.dataset_id}>
+                {d.dataset_id}
+              </option>
+            ))}
+          </select>
+        </div>
+
         <input
           type="text"
           placeholder="Comparison query"
@@ -336,7 +360,8 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
             uploadingDataset ||
             selectedEmbeddingModels.length === 0 ||
             !compareQuery.trim() ||
-            !hasAnyDataset
+            !hasAnyDataset ||
+            !selectedCompareDataset
           }
           className="w-full rounded-lg px-4 py-2 font-medium text-white bg-orange-600 hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
           aria-busy={isComparing}
@@ -345,6 +370,8 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
               ? "Upload a dataset first"
               : selectedEmbeddingModels.length === 0
               ? "Select embedding models to compare"
+              : !selectedCompareDataset
+              ? "Select a dataset for comparison"
               : !compareQuery.trim()
               ? "Enter a comparison query"
               : uploadingDataset
@@ -368,7 +395,9 @@ export default function EmbeddingLeftRail(props: EmbeddingLeftRailProps): JSX.El
               {datasets.map((d) => (
                 <li key={d.dataset_id} className="p-2 flex items-center justify-between">
                   <button
-                    className={`text-left font-mono text-xs ${selectedDataset === d.dataset_id ? "text-orange-600" : ""}`}
+                    className={`text-left font-mono text-xs ${
+                      selectedDataset === d.dataset_id ? "text-orange-600" : ""
+                    }`}
                     onClick={() => setSelectedDataset(d.dataset_id)}
                     title={`Docs: ${d.document_count}`}
                   >
