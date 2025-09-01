@@ -8,6 +8,7 @@ pydantic
 pydantic-settings
 python-multipart
 pyyaml
+orjson  # optional, faster JSON (FastAPI can use it if available)
 
 # Math / embeddings
 numpy
@@ -16,6 +17,10 @@ numpy
 langchain
 langchain-core
 langchain-community
+
+# LangGraph (workflows, state machines, memory/checkpointing)
+langgraph
+langsmith  # optional but recommended for tracing/evals
 
 # LangChain providers (chat + embeddings)
 langchain-anthropic
@@ -26,10 +31,4 @@ langchain-cohere
 langchain-deepseek
 langchain-voyageai
 langchain-cerebras
-# Optional: logging / debugging (recommended)
-loguru
 
-# (Optional) Vector DBs — uncomment the one(s) you use
-# faiss-cpu
-# chromadb
-# qdrant-client

@@ -198,7 +198,7 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
         provider_group.update(req.deepseek_params.model_dump(exclude_none=True))
 
     elif sel.provider == "cerebras" and req.cerebras_params:
-        cp = req.cerebras_params.model_dump(exclude_none=True)
+        provider_group.update(req.cerebras_params.model_dump(exclude_none=True))
         # If the frontend ever sends "stop" as List[str], pass through;
         # both ChatCerebras and OpenAI-wire accept it.
         provider_group.update(cp)
@@ -314,16 +314,16 @@ async def chat_stream(req: ChatRequest, request: Request):
 
             if hasattr(chain, "astream"):
                 async for chunk in chain.astream(inputs):
-                    # StrOutputParser returns strings; chat models may return AIMessageChunk
                     text = getattr(chunk, "content", chunk)
                     if not isinstance(text, str):
                         text = str(text)
-                    if not text:
+                    # Treat whitespace-only chunks as empty so fallback can fire
+                    if not text or not text.strip():
                         continue
-                    streamed_any = True
                     await queue.put(json.dumps({
                         "type": "delta", "provider": prov, "model": model_name, "text": text
                     }) + "\n")
+                    streamed_any = True
 
             if not streamed_any:
                 # Fallback: produce one final delta

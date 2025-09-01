@@ -51,7 +51,7 @@ const PREFIX_TO_BRAND: Record<string, ProviderBrand> = {
   deepseek: "deepseek",
 };
 
-// === NDJSON event shape from /chat/stream ===
+// === Legacy NDJSON event shape from /chat/stream ===
 type NDJSONEvent =
   | { type: "start"; provider: string; model: string }
   | { type: "delta"; provider: string; model: string; text: string }
@@ -59,9 +59,52 @@ type NDJSONEvent =
   | { type: "error"; provider: string; model: string; error: string }
   | { type: "all_done" };
 
+// === NEW LangGraph stream shapes ===
+type LGEvent =
+  | { type: "delta"; scope: "multi"; model: string; node?: string; text: string; done?: boolean }
+  | { type: "done"; scope: "multi"; model?: string; done: true }
+  | { type: "delta"; scope: "single"; node?: string; delta: string; done?: boolean }
+  | { type: "done"; scope: "single"; done: true };
+
 type Selection = { provider: string; model: string };
 type ChatMsg = { role: string; content: string };
 type WithDatasetId = SearchResult & { _dataset_id?: string };
+
+// Safe helpers for runtime narrowing
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object";
+
+// Legacy /chat/* events
+const isNDJSONEvent = (e: unknown): e is NDJSONEvent => {
+  if (!isRecord(e) || typeof e.type !== "string") return false;
+  if (e.type === "all_done") return true;
+  return (
+    typeof e.provider === "string" &&
+    typeof e.model === "string" &&
+    (e.type === "start" ||
+      e.type === "delta" ||
+      e.type === "end" ||
+      e.type === "error")
+  );
+};
+
+// /langgraph/* events
+const isLGEvent = (e: unknown): e is LGEvent => {
+  if (!isRecord(e) || typeof e.type !== "string" || typeof e.scope !== "string") return false;
+
+  if (e.scope === "multi") {
+    if (e.type === "delta") {
+      return typeof e.model === "string" && typeof e.text === "string";
+    }
+    if (e.type === "done") return true;
+  }
+  if (e.scope === "single") {
+    if (e.type === "delta") return typeof e.delta === "string";
+    if (e.type === "done") return true;
+  }
+  return false;
+};
+
 
 // --- Group param shapes (same as backend expects) ---
 interface AnthropicGroupParams {
@@ -154,12 +197,12 @@ function uiWireForProviderKey(provKey: string): ProviderWire {
   return "unknown";
 }
 
-// === Build selections for /chat endpoints
+// === Build selections for /chat endpoints (legacy)
 function buildSelections(selected: string[], providerOf: (m: string) => string): Selection[] {
   return selected.map((model) => ({ provider: providerOf(model), model }));
 }
 
-// === Build ChatRequest body for /chat/*
+// === Build ChatRequest body for /chat/* (legacy)
 function buildChatRequestBody(opts: {
   prompt: string;
   selected: string[];
@@ -273,6 +316,29 @@ function buildChatRequestBody(opts: {
   return body;
 }
 
+// === LangGraph helpers ===
+function toWire(providerKey: string, model: string) {
+  return `${providerKey}:${model}`;
+}
+
+function buildLangGraphMultiBody(opts: {
+  prompt: string;
+  selected: string[];
+  providerOf: (m: string) => string;
+  history?: { role: string; content: string }[];
+  perModelParams: Record<string, Record<string, unknown>>;
+}) {
+  const { prompt, selected, providerOf, history, perModelParams } = opts;
+  const targets = selected.map((m) => toWire(providerOf(m), m));
+  const messages = [...(history || []), { role: "user", content: prompt }];
+  const per_model_params: Record<string, Record<string, unknown>> = {};
+  for (const m of selected) {
+    const wire = toWire(providerOf(m), m);
+    per_model_params[wire] = perModelParams[m] || {};
+  }
+  return { targets, messages, per_model_params };
+}
+
 export default function CompareLLMClient(): JSX.Element {
   // ==== STATE ====
   const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
@@ -360,14 +426,9 @@ export default function CompareLLMClient(): JSX.Element {
   const modelToProviderKey = useMemo(() => buildModelToProviderKeyMap(providers), [providers]);
   const getProviderType = useCallback((m: string): ProviderBrand => {
     const s = (m || "").toLowerCase();
-    // If it's an embedding key like "openai:xxx" or "cohere:xxx", use the prefix directly
     const prefix = s.split(":", 1)[0];
     if (PREFIX_TO_BRAND[prefix]) return PREFIX_TO_BRAND[prefix];
-
-    // Otherwise, try the map built from /providers (works for chat models and some embedding names)
     if (modelToBrand[m]) return modelToBrand[m];
-
-    // Final fallback: heuristic brand detection
     return coerceBrand(m);
   }, [modelToBrand]);
   const getProviderKey = useCallback((m: string): string => modelToProviderKey[m] ?? "unknown", [modelToProviderKey]);
@@ -389,7 +450,7 @@ export default function CompareLLMClient(): JSX.Element {
     const load = async () => {
       setLoadingProviders(true);
       try {
-        // Providers (for chat + embedding branding)
+        // Providers
         const res = await fetch(`${API_BASE}/providers`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load providers: ${res.status} ${res.statusText}`);
         const raw = await res.json();
@@ -440,7 +501,7 @@ export default function CompareLLMClient(): JSX.Element {
         setProviders(normalized);
         setAllModels([...new Set(normalized.flatMap((p) => p.models ?? []))].sort());
 
-        // Embedding models & stores from /embeddings
+        // Embedding models & stores
         const [embM, storesRes] = await Promise.all([listEmbeddingModels(), listStores()]);
         setAllEmbeddingModels(embM.embedding_models || []);
         setStores(storesRes.stores || {});
@@ -452,7 +513,7 @@ export default function CompareLLMClient(): JSX.Element {
         const byDataset = groupStoresByDataset(storesRes.stores || {});
         const ds: Dataset[] = Object.keys(byDataset)
           .sort()
-          .map((id) => ({ dataset_id: id } as Dataset)); // document_count not available
+          .map((id) => ({ dataset_id: id } as Dataset));
         setDatasets(ds);
       } finally {
         setLoadingProviders(false);
@@ -551,7 +612,6 @@ export default function CompareLLMClient(): JSX.Element {
       const sid = makeStoreId(snapshot.dataset, snapshot.model);
       const { matches } = await queryStore(sid, snapshot.query, { k: topKSingle, with_scores: true, search_type: "similarity" });
 
-      // Map backend shape -> SearchResult shape your UI expects
       const rows: SearchResult[] = matches.map((m) => {
         const base: Record<string, unknown> = { ...(m.metadata || {}) };
         base.text = m.page_content;
@@ -615,7 +675,6 @@ export default function CompareLLMClient(): JSX.Element {
       }
 
       const json = (await res.json()) as MultiSearchResponse;
-      // If backend doesn't include duration, compute client-side as a fallback:
       const payload: MultiSearchResponse = {
         ...json,
         duration_ms: typeof json.duration_ms === "number" ? json.duration_ms : Date.now() - started,
@@ -715,7 +774,7 @@ export default function CompareLLMClient(): JSX.Element {
   const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
     pruneUndefBrandUtils(obj);
 
-  // === Interactive chat (uses refs to avoid stale state) ===
+  // === Interactive chat via LangGraph single-stream ===
   const sendInteractiveMessage = useCallback(async () => {
     if (!activeModel || !interactivePrompt.trim()) return;
     const message = interactivePrompt.trim();
@@ -742,41 +801,66 @@ export default function CompareLLMClient(): JSX.Element {
       ];
       const apiMessages: ChatMsg[] = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
 
-      const body = buildChatRequestBody({
-        prompt: message,
-        selected: [activeModel],
-        providerOf: (m) => getProviderKey(m),
-        history: apiMessages.slice(0, -1),
-        system: undefined,
-        temperature: modelParamsRef.current[activeModel]?.temperature ?? globalTempRef.current,
-        max_tokens: modelParamsRef.current[activeModel]?.max_tokens ?? globalMaxRef.current,
-        min_tokens: modelParamsRef.current[activeModel]?.min_tokens ?? globalMinRef.current,
-        modelParams: { [activeModel]: modelParamsRef.current[activeModel] || {} },
-      });
-
-      const res = await fetch(`${API_BASE}/chat/batch`, {
+      const wire = toWire(getProviderKey(activeModel), activeModel);
+      const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          wire,
+          messages: apiMessages.slice(0, -1), // history without the just-sent user message (LG will add the last user below if you prefer; we keep consistent with our pattern)
+          // Simpler: include whole transcript (LG reducers handle append). For clean deltas we’ll send the last user as the final message:
+          // messages: apiMessages,
+          model_params: modelParamsRef.current[activeModel] || {},
+          thread_id: `chat:${activeModel}`, // memory per model window
+        }),
         signal: controller.signal,
       });
-      if (!res.ok) {
-        const errorData = (await res.json().catch(() => ({ detail: res.statusText }))) as { detail?: string };
-        throw new Error(errorData.detail || `HTTP ${res.status}`);
-      }
-      const json = (await res.json()) as { results: { provider: string; model: string; response?: string; error?: string }[] };
-      const entry = json.results.find((r) => r.model === activeModel);
-      const assistantMessage = entry?.response || entry?.error || "No response";
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      setModelChats((prev) => ({
-        ...prev,
-        [activeModel]: {
-          ...prev[activeModel],
-          messages: [...(prev[activeModel]?.messages || []), { role: "assistant", content: assistantMessage, timestamp: Date.now() }],
-          isStreaming: false,
-          currentResponse: "",
-        },
-      }));
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() || "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let evt: LGEvent;
+          try { evt = JSON.parse(trimmed) as LGEvent; } catch { continue; }
+          if (evt.type === "delta" && evt.scope === "single") {
+            const piece = evt.delta || "";
+            setModelChats((prev) => ({
+              ...prev,
+              [activeModel]: {
+                ...(prev[activeModel] || { messages: [] }),
+                isStreaming: true,
+                currentResponse: (prev[activeModel]?.currentResponse || "") + piece,
+              },
+            }));
+          } else if (evt.type === "done" && evt.scope === "single") {
+            setModelChats((prev) => {
+              const streamed = prev[activeModel]?.currentResponse || "";
+              return {
+                ...prev,
+                [activeModel]: {
+                  ...(prev[activeModel] || { messages: [] }),
+                  isStreaming: false,
+                  currentResponse: "",
+                  messages: [
+                    ...(prev[activeModel]?.messages || []),
+                    { role: "assistant", content: streamed, timestamp: Date.now() },
+                  ],
+                },
+              };
+            });
+          }
+        }
+      }
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === "AbortError";
       if (!isAbort) {
@@ -805,7 +889,7 @@ export default function CompareLLMClient(): JSX.Element {
     setEndedAt(null);
   }, []);
 
-  // === Run (uses refs so you don't have to click twice) ===
+  // === Run (LangGraph MULTI stream) ===
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
     streamAbortRef.current?.abort();
@@ -816,53 +900,116 @@ export default function CompareLLMClient(): JSX.Element {
     setIsRunning(true);
     setLastRunPrompt(promptRefLive.current.trim());
 
-    const startedAt = Date.now();
-    const modelStart: Record<string, number> = {};
+    // Build wire<->model maps for this run
+    const selectedNow = [...selectedRef.current];
+    const wireForModel: Record<string, string> = Object.fromEntries(
+      selectedNow.map((m) => [m, toWire(getProviderKey(m), m)])
+    );
+    const modelForWire: Record<string, string> = Object.fromEntries(
+      selectedNow.map((m) => [wireForModel[m], m])
+    );
 
-    const processEvent = (evt: NDJSONEvent) => {
-      if (evt.type === "start") {
-        modelStart[evt.model] = Date.now();
-      } else if (evt.type === "delta") {
-        setAnswers((prev) => ({
-          ...prev,
-          [evt.model]: {
-            answer: (prev[evt.model]?.answer || "") + (evt.text || ""),
-            error: prev[evt.model]?.error,
-            latency_ms: prev[evt.model]?.latency_ms ?? 0,
-          },
-        }));
-      } else if (evt.type === "error") {
-        setAnswers((prev) => ({
-          ...prev,
-          [evt.model]: { answer: prev[evt.model]?.answer || "", error: evt.error || "Unknown error", latency_ms: prev[evt.model]?.latency_ms ?? 0 },
-        }));
-      } else if (evt.type === "end") {
-        const t0 = modelStart[evt.model] ?? startedAt;
-        setAnswers((prev) => {
-          const prevAns = prev[evt.model]?.answer || "";
-          return { ...prev, [evt.model]: { ...prev[evt.model], answer: prevAns || evt.text || "", latency_ms: Date.now() - t0 } };
-        });
-      } else if (evt.type === "all_done") {
-        setIsRunning(false);
-        setEndedAt(Date.now());
-        streamAbortRef.current = null;
+    const startedAtRun = Date.now();
+    const modelStart: Record<string, number> = {}; // latency starts on first delta per model
+
+    // inside runPrompt() (you can keep the same variables it closes over)
+    const processEvent = (evt: NDJSONEvent | LGEvent | unknown) => {
+      // Legacy /chat/* shape
+      if (isNDJSONEvent(evt)) {
+        if (evt.type === "start") {
+          modelStart[evt.model] = Date.now();
+          return;
+        }
+        if (evt.type === "delta") {
+          setAnswers((prev) => ({
+            ...prev,
+            [evt.model]: {
+              answer: (prev[evt.model]?.answer || "") + (evt.text || ""),
+              error: prev[evt.model]?.error,
+              latency_ms: prev[evt.model]?.latency_ms ?? 0,
+            },
+          }));
+          return;
+        }
+        if (evt.type === "error") {
+          setAnswers((prev) => ({
+            ...prev,
+            [evt.model]: {
+              answer: prev[evt.model]?.answer || "",
+              error: evt.error || "Unknown error",
+              latency_ms: prev[evt.model]?.latency_ms ?? 0,
+            },
+          }));
+          return;
+        }
+        if (evt.type === "end") {
+          const t0 = modelStart[evt.model] ?? startedAtRun;
+          setAnswers((prev) => {
+            const prevAns = prev[evt.model]?.answer || "";
+            return {
+              ...prev,
+              [evt.model]: {
+                ...prev[evt.model],
+                answer: prevAns || evt.text || "",
+                latency_ms: Date.now() - t0,
+              },
+            };
+          });
+          return;
+        }
+        if (evt.type === "all_done") {
+          setIsRunning(false);
+          setEndedAt(Date.now());
+          streamAbortRef.current = null;
+          return;
+        }
       }
+
+      // New /langgraph/* shape
+      if (isLGEvent(evt)) {
+        if (evt.scope === "multi") {
+          if (evt.type === "delta" && evt.model) {
+            const modelKey = modelForWire[evt.model] || evt.model;
+            if (!modelStart[modelKey]) modelStart[modelKey] = Date.now();
+            setAnswers((prev) => ({
+              ...prev,
+              [modelKey]: {
+                ...(prev[modelKey] || { answer: "", latency_ms: 0 }),
+                // append piece-wise tokens
+                answer: (prev[modelKey]?.answer || "") + (evt.text || ""),
+              },
+            }));
+            return;
+          }
+          if (evt.type === "done" && evt.model) {
+            const modelKey = modelForWire[evt.model] || evt.model;
+            const t0 = modelStart[modelKey] ?? startedAtRun;
+            setAnswers((prev) => ({
+              ...prev,
+              [modelKey]: {
+                ...(prev[modelKey] || { answer: "" }),
+                latency_ms: Date.now() - t0,
+              },
+            }));
+            return;
+          }
+        }
+        // (single-scope is handled in modal/retry)
+      }
+
+      // Ignore malformed or unknown lines silently
     };
 
     try {
-      const body = buildChatRequestBody({
+      const body = buildLangGraphMultiBody({
         prompt: promptRefLive.current.trim(),
-        selected: selectedRef.current,
+        selected: selectedNow,
         providerOf: (m) => getProviderKey(m),
         history: undefined,
-        system: undefined,
-        temperature: globalTempRef.current,
-        max_tokens: globalMaxRef.current,
-        min_tokens: globalMinRef.current,
-        modelParams: modelParamsRef.current,
+        perModelParams: modelParamsRef.current,
       });
 
-      const res = await fetch(`${API_BASE}/chat/stream`, {
+      const res = await fetch(`${API_BASE}/langgraph/chat/multi/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -884,7 +1031,8 @@ export default function CompareLLMClient(): JSX.Element {
           const trimmed = line.trim();
           if (!trimmed) continue;
           try {
-            processEvent(JSON.parse(trimmed) as NDJSONEvent);
+            const parsed = JSON.parse(trimmed) as NDJSONEvent | LGEvent;
+            processEvent(parsed);
           } catch {
             /* ignore malformed */
           }
@@ -892,7 +1040,7 @@ export default function CompareLLMClient(): JSX.Element {
       }
       if (buf.trim()) {
         try {
-          processEvent(JSON.parse(buf.trim()) as NDJSONEvent);
+          processEvent(JSON.parse(buf.trim()) as NDJSONEvent | LGEvent);
         } catch {
           /* ignore */
         }
@@ -910,7 +1058,7 @@ export default function CompareLLMClient(): JSX.Element {
     }
   }, [canRun, resetRun, getProviderKey]);
 
-  // === Retry single model (uses refs)
+  // === Retry single model via LangGraph single-stream ===
   const retryModel = useCallback(
     async (model: string) => {
       const retryPrompt = (lastRunPrompt || promptRefLive.current).trim();
@@ -923,22 +1071,16 @@ export default function CompareLLMClient(): JSX.Element {
       const started = Date.now();
 
       try {
-        const body = buildChatRequestBody({
-          prompt: retryPrompt,
-          selected: [model],
-          providerOf: (m) => getProviderKey(m),
-          history: undefined,
-          system: undefined,
-          temperature: modelParamsRef.current[model]?.temperature ?? globalTempRef.current,
-          max_tokens: modelParamsRef.current[model]?.max_tokens ?? globalMaxRef.current,
-          min_tokens: modelParamsRef.current[model]?.min_tokens ?? globalMinRef.current,
-          modelParams: { [model]: modelParamsRef.current[model] || {} },
-        });
-
-        const res = await fetch(`${API_BASE}/chat/stream`, {
+        const wire = toWire(getProviderKey(model), model);
+        const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
+          body: JSON.stringify({
+            wire,
+            messages: [{ role: "user", content: retryPrompt }],
+            model_params: modelParamsRef.current[model] || {},
+            thread_id: `retry:${model}`,
+          }),
           signal: controller.signal,
         });
 
@@ -960,46 +1102,37 @@ export default function CompareLLMClient(): JSX.Element {
           for (const line of lines) {
             const trimmed = line.trim();
             if (!trimmed) continue;
-            try {
-              const evt = JSON.parse(trimmed) as NDJSONEvent;
-              if (evt.type === "delta" && evt.model === model) {
-                setAnswers((prev) => ({
-                  ...prev,
-                  [model]: {
-                    answer: (prev[model]?.answer || "") + (evt.text || ""),
-                    error: prev[model]?.error,
-                    latency_ms: prev[model]?.latency_ms ?? 0,
-                  },
-                }));
-              } else if (evt.type === "error" && evt.model === model) {
-                setAnswers((prev) => ({ ...prev, [model]: { answer: prev[model]?.answer || "", error: evt.error, latency_ms: 0 } }));
-              } else if (evt.type === "end" && evt.model === model) {
-                setAnswers((prev) => ({ ...prev, [model]: { ...prev[model], latency_ms: Date.now() - started } }));
-              }
-            } catch {
-              /* ignore */
+            let evt: LGEvent;
+            try { evt = JSON.parse(trimmed) as LGEvent; } catch { continue; }
+            if (evt.scope === "single" && evt.type === "delta") {
+              const piece = evt.delta || "";
+              setAnswers((prev) => ({
+                ...prev,
+                [model]: {
+                  answer: (prev[model]?.answer || "") + piece,
+                  error: prev[model]?.error,
+                  latency_ms: prev[model]?.latency_ms ?? 0,
+                },
+              }));
+            } else if (evt.scope === "single" && evt.type === "done") {
+              setAnswers((prev) => ({
+                ...prev,
+                [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
+              }));
             }
           }
         }
 
         if (buf.trim()) {
           try {
-            const evt = JSON.parse(buf.trim()) as NDJSONEvent;
-            if (evt.type === "delta" && evt.model === model) {
+            const evt = JSON.parse(buf.trim()) as LGEvent;
+            if (evt.scope === "single" && evt.type === "done") {
               setAnswers((prev) => ({
                 ...prev,
-                [model]: {
-                  answer: (prev[model]?.answer || "") + (evt.text || ""),
-                  error: prev[model]?.error,
-                  latency_ms: prev[model]?.latency_ms ?? 0,
-                },
+                [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
               }));
-            } else if (evt.type === "end" && evt.model === model) {
-              setAnswers((prev) => ({ ...prev, [model]: { ...prev[model], latency_ms: Date.now() - started } }));
             }
-          } catch {
-            /* noop */
-          }
+          } catch { /* noop */ }
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Unknown error";

@@ -18,6 +18,7 @@ from core.model_factory import build_chat_model
 # Routers
 from routers import providers  # your /providers endpoints
 from routers import chat
+from routers import langgraph
 
 
 def _log(msg: str) -> None:
@@ -92,7 +93,8 @@ app.include_router(providers.router)
 app.include_router(chat.router)
 app.include_router(providers.router)
 app.include_router(chat.router)
-app.include_router(embeddings.router)  
+app.include_router(embeddings.router)
+app.include_router(langgraph.router)   
 
 # Optional: quick health check and inventory
 @app.get("/health")

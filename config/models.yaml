@@ -74,7 +74,7 @@ providers:
   
   cerebras:
     type: cerebras
-    wire: openai
+    #wire: openai
     base_url: https://api.cerebras.ai/v1
     api_key_env: CEREBRAS_API_KEY
     headers: {}   # nothing special required

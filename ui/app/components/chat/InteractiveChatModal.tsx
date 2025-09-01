@@ -1,7 +1,7 @@
 // components/chat/InteractiveChatModal.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChatMessage } from "@/app/lib/types";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -17,6 +17,7 @@ export default function InteractiveChatModal({
   prompt,
   setPrompt,
   onSend,
+  onStop, // optional: parent can pass a cancel handler (e.g., AbortController.abort())
 }: {
   activeModel: string;
   messages: ChatMessage[];
@@ -26,8 +27,15 @@ export default function InteractiveChatModal({
   setPrompt: (v: string) => void;
   onSend: () => void;
   onClose: () => void;
+  onStop?: () => void;
 }) {
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+
+  // Auto-scroll to bottom on new content (useful for LangGraph streaming)
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, isStreaming, currentResponse]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -57,7 +65,14 @@ export default function InteractiveChatModal({
           </h2>
 
           <div className="flex items-center gap-2">
-            {/* Fullscreen toggle — premium styling */}
+            {/* Streaming status pill (LangGraph) */}
+            {isStreaming && (
+              <span className="px-2 py-1 rounded-md text-xs font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300">
+                streaming…
+              </span>
+            )}
+
+            {/* Fullscreen toggle */}
             <button
               onClick={() => setIsFullscreen((v) => !v)}
               className={[
@@ -78,6 +93,17 @@ export default function InteractiveChatModal({
                 <Maximize2 className="h-4.5 w-4.5" />
               )}
             </button>
+
+            {/* Stop (optional) */}
+            {isStreaming && onStop && (
+              <button
+                onClick={onStop}
+                className="h-9 px-3 rounded-lg border border-red-200 bg-red-50 text-red-700 hover:bg-red-100 dark:border-red-800 dark:bg-red-900/20 dark:text-red-300 text-sm"
+                title="Stop streaming"
+              >
+                Stop
+              </button>
+            )}
 
             {/* Close */}
             <button
@@ -141,15 +167,17 @@ export default function InteractiveChatModal({
                     </ReactMarkdown>
                   </div>
 
-                  <div className="text-xs opacity-70 mt-1">
-                    {new Date(m.timestamp).toLocaleTimeString()}
-                  </div>
+                  {m.timestamp && (
+                    <div className="text-xs opacity-70 mt-1">
+                      {new Date(m.timestamp).toLocaleTimeString()}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
           ))}
 
-          {/* Streaming message */}
+          {/* Streaming preview bubble (LangGraph delta accumulation) */}
           {isStreaming && currentResponse && (
             <div className="flex justify-start">
               <div className="w-full sm:max-w-[80%] rounded-2xl px-4 py-2 bg-zinc-100 dark:bg-zinc-800">
@@ -168,10 +196,12 @@ export default function InteractiveChatModal({
                     {currentResponse}
                   </ReactMarkdown>
                 </div>
-                <div className="text-xs opacity-70 mt-1">Typing...</div>
+                <div className="text-xs opacity-70 mt-1">Typing…</div>
               </div>
             </div>
           )}
+
+          <div ref={bottomRef} />
         </div>
 
         {/* Input */}
@@ -206,7 +236,7 @@ export default function InteractiveChatModal({
               disabled={!prompt.trim() || isStreaming}
               className="px-6 py-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
             >
-              Send
+              {isStreaming ? "Streaming…" : "Send"}
             </button>
           </div>
           <div className="text-xs text-zinc-500 dark:text-zinc-400 mt-2">
