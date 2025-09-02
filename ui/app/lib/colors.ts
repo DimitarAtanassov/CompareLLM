@@ -4,7 +4,7 @@ import type { ProviderBrand } from "./types";
 export const PROVIDER_TEXT_COLOR: Record<ProviderBrand, string> = {
   anthropic: "text-orange-600 dark:text-orange-400",
   openai: "text-green-600 dark:text-green-400",
-  gemini: "text-green-600 dark:text-green-400",
+  gemini: "text-yellow-600 dark:text-yellow-400",
   google: "text-yellow-600 dark:text-yellow-400",
   ollama: "text-purple-600 dark:text-purple-400",
   deepseek: "text-sky-600 dark:text-sky-400",

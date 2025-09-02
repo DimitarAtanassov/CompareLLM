@@ -49,14 +49,14 @@ def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name
 
     raise ValueError(f"Unsupported provider or wire for '{provider_key}' (type={ptype}, wire={wire})")
 
-
 # ---------- parameter normalization ----------
 def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | None) -> Dict[str, Any]:
     """
     Map unified UI params -> provider-specific kwargs for LangChain chat models.
 
     Supported unified keys: temperature, max_tokens, top_p, top_k,
-    frequency_penalty, presence_penalty, stop, timeout, max_retries
+    frequency_penalty, presence_penalty, stop, timeout, max_retries,
+    thinking_budget (Gemini, flat), thinking_budget_tokens (legacy UI)
     """
     if not params:
         return {}
@@ -91,6 +91,27 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
         elif pt in ("gemini", "ollama"):
             out["top_k"] = params["top_k"]
 
+    # ✅ GEMINI: flat reasoning budget
+    if pt == "gemini":
+        # prefer flat `thinking_budget`, fall back to `thinking_budget_tokens`
+        tb = params.get("thinking_budget")
+        if tb is None:
+            tb = params.get("thinking_budget_tokens")
+
+        if tb is not None:
+            try:
+                out["thinking_budget"] = int(tb)  # -1 (dynamic), 0 (disable), or positive budget
+            except Exception:
+                pass
+
+        # optional passthroughs if your UI ever sends these
+        if params.get("include_thoughts") is not None:
+            out["include_thoughts"] = params["include_thoughts"]
+        if params.get("response_modalities") is not None:
+            out["response_modalities"] = params["response_modalities"]
+        if params.get("safety_settings") is not None:
+            out["safety_settings"] = params["safety_settings"]
+
     # penalties (OpenAI-ish stacks)
     for k in ("frequency_penalty", "presence_penalty"):
         if params.get(k) is not None and pt in ("openai", "deepseek", "cerebras"):
@@ -106,7 +127,6 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
             out[k] = params[k]
 
     return out
-
 
 def parse_wire(wire: str) -> Tuple[str, str]:
     if ":" not in wire:
