@@ -31,7 +31,6 @@ providers:
   # DeepSeek Models
   deepseek:
     type: deepseek
-    wire: openai
     base_url: https://api.deepseek.com/v1
     api_key_env: DEEPSEEK_API_KEY
     headers: {}
@@ -47,8 +46,8 @@ providers:
     api_key_env: null  # No API key needed for local
     headers: {}
     models:
-      - llama2
-      - mistral
+      #- llama2
+      #- mistral
       # - mixtral
       # - phi
       # - neural-chat
@@ -56,8 +55,8 @@ providers:
       # - orca-mini
       # - zephyr
     embedding_models:
-      - nomic-embed-text
-      - all-minilm
+      #- nomic-embed-text
+      #- all-minilm
 
   # Google Gemini Models (optional)
   gemini:
@@ -66,8 +65,8 @@ providers:
     api_key_env: GEMINI_API_KEY
     headers: {}
     models:
-      - gemini-1.5-flash
-      - gemini-1.5-pro
+      - gemini-2.5-flash
+      - gemini-2.5-pro
       - gemini-1.5-flash-latest
       - gemini-1.5-pro-latest
     embedding_models:
@@ -75,7 +74,7 @@ providers:
   
   cerebras:
     type: cerebras
-    wire: openai
+    #wire: openai
     base_url: https://api.cerebras.ai/v1
     api_key_env: CEREBRAS_API_KEY
     headers: {}   # nothing special required
@@ -114,9 +113,3 @@ providers:
       - embed-multilingual-v3.0
       - embed-english-light-v3.0
       - embed-multilingual-light-v3.0
-
-# Default settings
-defaults:
-  temperature: 0.7
-  max_tokens: 8192
-  timeout_seconds: 180

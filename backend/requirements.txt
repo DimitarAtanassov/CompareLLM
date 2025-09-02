@@ -1,8 +1,34 @@
+# Core framework
 fastapi
 uvicorn[standard]
+
+# HTTP & serialization
 httpx
 pydantic
-pyyaml
-numpy
-pydantic_settings
+pydantic-settings
 python-multipart
+pyyaml
+orjson  # optional, faster JSON (FastAPI can use it if available)
+
+# Math / embeddings
+numpy
+
+# LangChain core
+langchain
+langchain-core
+langchain-community
+
+# LangGraph (workflows, state machines, memory/checkpointing)
+langgraph
+langsmith  # optional but recommended for tracing/evals
+
+# LangChain providers (chat + embeddings)
+langchain-anthropic
+langchain-openai
+langchain-google-genai
+langchain-ollama
+langchain-cohere
+langchain-deepseek
+langchain-voyageai
+langchain-cerebras
+

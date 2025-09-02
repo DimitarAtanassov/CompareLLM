@@ -1,117 +1,163 @@
-# backend/main.py
+# main.py
+from __future__ import annotations
 import os
-import asyncio
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Any, Dict
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
-# Master router (chat/embed/health/utils + legacy shims)
-from api.router import router as api_router
+from routers import embeddings
+from core.dataset_catalog import DatasetCatalog
+from core.embedding_factory import build_embedding_model
+from core.embedding_registry import EmbeddingRegistry
+from services.embedding_services import EmbeddingService
+from core.config_loader import load_config
+from core.model_registry import ModelRegistry
+from core.model_factory import build_chat_model
 
-# Registry + adapters
-from providers.registry import ModelRegistry
-from providers.adapters.enhanced_chat_adapter import EnhancedChatAdapter
-from providers.adapters.embedding_adapter import EmbeddingAdapter
+# Routers
+from routers import providers  # /providers endpoints
+from routers import chat
+from routers import langgraph
 
-# Services
-from services.enhanced_chat_service import EnhancedChatService
-from services.embedding_service import EmbeddingService
-from services.dataset_service import DatasetService
-from services.search_services import SearchService  # or services.search_service if that's your filename
+# ✅ LangGraph memory (shared across all graphs/requests)
+from langgraph.checkpoint.memory import InMemorySaver
 
-# Storage backend (memory store)
-MemoryStorageBackend = None
-try:
-    from storage.memory_store import MemoryStorageBackend as _MSB
-    MemoryStorageBackend = _MSB
-except Exception:
-    try:
-        # Fallback path if your file lives elsewhere but same import path
-        from storage.memory_store import MemoryStorageBackend as _MSB
-        MemoryStorageBackend = _MSB
-    except Exception:
-        pass
+
+def _log(msg: str) -> None:
+    print(f"[Main] {msg}")
+
+
+def _env_origins() -> list[str]:
+    """
+    Read allowed origins from env. If unset, default to local dev hosts.
+    NOTE: With allow_credentials=True, you cannot use ["*"].
+    """
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    # sensible dev defaults
+    return [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost",
+        "http://127.0.0.1",
+    ]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # ---------- Startup ----------
-    # CORS is middleware so it stays in create_app(); all other state goes here.
-    # 1) Registry
-    models_yaml_path = os.getenv("MODELS_YAML", "/config/models.yaml")
-    app.state.registry = ModelRegistry.from_path(models_yaml_path)
+    # ---- Startup ----
+    cfg: Dict[str, Any] = load_config()  # reads config/models.yaml
 
-    # 2) Adapters
-    app.state.chat_adapter = EnhancedChatAdapter()
-    app.state.embedding_adapter = EmbeddingAdapter()
+    app.state.config = cfg
+    _log(f"[startup] Loaded config sections: {list(cfg.keys())}")
 
-    # 3) Storage
-    if MemoryStorageBackend is None:
-        raise RuntimeError(
-            "No MemoryStorageBackend found. Ensure storage/memory_store.py defines MemoryStorageBackend."
-        )
-    storage = MemoryStorageBackend()
+    # ✅ Create ONE shared LangGraph memory saver for the whole app
+    app.state.graph_memory = InMemorySaver()
+    _log("[startup] Initialized shared LangGraph memory saver (app.state.graph_memory)")
 
-    # 4) Services (singletons)
-    registry = app.state.registry
-    chat_adapter = app.state.chat_adapter
-    embedding_adapter = app.state.embedding_adapter
+    reg = ModelRegistry()
 
-    chat = EnhancedChatService(registry=registry, chat_adapter=chat_adapter)
-    embedding = EmbeddingService(registry=registry, embedding_adapter=embedding_adapter)
-    dataset = DatasetService(registry=registry, embedding_service=embedding, storage=storage)
-    search = SearchService(registry=registry, embedding_service=embedding, storage=storage)
+    providers_cfg = (cfg.get("providers") or {})
+    # ✅ Make providers config available to the registry for provider_type(), etc.
+    reg.set_providers_cfg(providers_cfg)
+    _log(f"[startup] Found {len(providers_cfg)} providers in config: {list(providers_cfg.keys())}")
 
-    # DI map used by routes
-    app.state.services = {
-        "chat": chat,
-        "embedding": embedding,
-        "dataset": dataset,
-        "search": search,
-    }
-    # Back-compat attributes some routers expect
-    app.state.embedding_service = embedding
-    app.state.search_service = search
-    app.state.memory_store = storage
+    count = 0
+    for pkey, pcfg in providers_cfg.items():
+        _log(f"[startup] Initializing provider: {pkey} | keys={list(pcfg.keys())}")
+        for m in pcfg.get("models") or []:
+            _log(f"    -> Building model: {m}")
+            try:
+                model_obj = build_chat_model(pkey, pcfg, m)
+                reg.add(pkey, m, model_obj)
+                _log(f"    ✅ Added model '{m}' for provider '{pkey}'")
+                count += 1
+            except Exception as e:
+                _log(f"    ❌ Failed to build model '{m}' for '{pkey}': {e}")
 
-    # Hand control to the app (serving)
+    app.state.registry = reg
+    _log(f"[startup] Initialized {count} chat models across {len(providers_cfg)} providers")
+
+    emb_reg = EmbeddingRegistry()
+    emb_count = 0
+    for pkey, pcfg in providers_cfg.items():
+        for em in pcfg.get("embedding_models") or []:
+            try:
+                emb = build_embedding_model(pkey, pcfg, em)
+                emb_reg.add_embedding(pkey, em, emb)
+                emb_count += 1
+            except Exception as e:
+                _log(f"❌ Embedding build failed for {pkey}:{em} -> {e}")
+
+    app.state.embedding_registry = emb_reg
+    app.state.embedding_service = EmbeddingService(emb_reg)
+    app.state.dataset_catalog = DatasetCatalog()
+    _log(f"Initialized embeddings -> {emb_count} embedding model(s) available")
+
     try:
         yield
     finally:
-        # ---------- Shutdown ----------
-        try:
-            closer = getattr(app.state.memory_store, "close", None)
-            if callable(closer):
-                res = closer()
-                if asyncio.iscoroutine(res):
-                    await res
-        except Exception:
-            pass
+        # ---- Shutdown ----
+        _log("[shutdown] Application shutting down, cleaning up models...")
+        # If any models need cleanup, do it here.
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(
-        title="LLM Playground (Enhanced)",
-        version="2.0",
-        lifespan=lifespan,   # <- modern FastAPI lifecycle
-    )
+    app = FastAPI(title="CompareLLM", version="0.1.0", lifespan=lifespan)
 
-    # CORS (open for dev; tighten in prod)
-    allow = os.getenv("CORS_ALLOW_ORIGINS")
+    # --- CORS (must be added BEFORE routers) ---
+    allow_origins = _env_origins()
+    _log(f"[cors] allow_origins={allow_origins}")
+
+    # If you need regex-based dev tunnels (e.g., ngrok), set CORS_ALLOW_ORIGIN_REGEX
+    allow_origin_regex = os.getenv("CORS_ALLOW_ORIGIN_REGEX") or None
+    if allow_origin_regex:
+        _log(f"[cors] allow_origin_regex={allow_origin_regex}")
+
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allow.split(",") if allow else ["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=allow_origins,
+        allow_origin_regex=allow_origin_regex,
+        allow_credentials=True,          # if you pass cookies/Authorization
+        allow_methods=["GET", "POST", "OPTIONS"],  # keep tight but sufficient
+        allow_headers=["*"],             # or enumerate: Authorization, Content-Type, etc.
+        expose_headers=["X-Accel-Buffering", "X-Request-ID"],
+        max_age=600,                     # cache preflight (seconds)
     )
 
-    # Mount all API routes
-    app.include_router(api_router)
+    # Optional: handle any stray preflight requests explicitly (middleware should handle these already)
+    @app.options("/{full_path:path}")
+    def options_handler(full_path: str) -> Response:
+        return Response(status_code=204)
+
+    # Routers (mounted after CORS middleware)
+    app.include_router(providers.router)
+    app.include_router(chat.router)
+    app.include_router(embeddings.router)
+    app.include_router(langgraph.router)
+
+    # Health + inventory
+    @app.get("/health")
+    def health():
+        _log("[health] Health check called")
+        return {"ok": True}
+
+    @app.get("/inventory")
+    def inventory():
+        reg: ModelRegistry = app.state.registry
+        models = sorted(list(reg.keys()))
+        _log(f"[inventory] Returning {len(models)} models")
+        return {"models": models}
+
     return app
 
 
 app = create_app()
-# Run: uvicorn backend.main:app --reload
+
+if __name__ == "__main__":
+    import uvicorn
+    _log("[main] Starting uvicorn server on 0.0.0.0:8000")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

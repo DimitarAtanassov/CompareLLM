@@ -11,11 +11,10 @@ import {
   PerModelParam,
   ProviderBrand,
   ProviderInfo,
-  ProvidersResp,
   ProviderWire,
   SearchResult,
 } from "../lib/types";
-import { coerceBrand, coerceWire } from "../lib/utils";
+import { coerceBrand, pruneUndefined as pruneUndefBrandUtils } from "../lib/utils";
 import { API_BASE } from "../lib/config";
 import InteractiveChatModal from "./chat/InteractiveChatModal";
 import Tabs from "./ui/Tabs";
@@ -26,47 +25,403 @@ import { PROVIDER_BADGE_BG } from "../lib/colors";
 import EmbeddingLeftRail from "./embeddings/EmbeddingLeftRail";
 import EmbeddingRightRail from "./embeddings/EmbeddingRightRail";
 
-/** Streamed event from /v2/chat/completions/enhanced/ndjson */
-type StreamEvent =
-  | { type: "meta"; models: string[] }
-  | { type: "chunk"; model: string; answer?: string; error?: string; latency_ms: number }
-  | { type: "done" };
+// ---- embeddings API helpers ----
+import {
+  listEmbeddingModels,
+  listStores,
+  createStore,
+  indexDocs,
+  queryStore,
+  toDocsFromJsonArray,
+  makeStoreId,
+  groupStoresByDataset,
+  deleteStore,
+  type IndexDoc,
+} from "../lib/utils";
 
-/** Body shape for the enhanced chat endpoint */
-type EnhancedChatRequest = {
-  messages: { role: string; content: string }[];
-  models: string[];
+const PREFIX_TO_BRAND: Record<string, ProviderBrand> = {
+  openai: "openai",
+  anthropic: "anthropic",
+  cohere: "cohere",
+  gemini: "google",
+  google: "google",
+  ollama: "ollama",
+  voyage: "voyage",
+  cerebras: "cerebras",
+  deepseek: "deepseek",
+};
+
+// === Legacy NDJSON event shape from /chat/stream ===
+type NDJSONEvent =
+  | { type: "start"; provider: string; model: string }
+  | { type: "delta"; provider: string; model: string; text: string }
+  | { type: "end"; provider: string; model: string; text?: string }
+  | { type: "error"; provider: string; model: string; error: string }
+  | { type: "all_done" };
+
+// === NEW LangGraph stream shapes ===
+type LGEvent =
+  | { type: "delta"; scope: "multi"; model: string; node?: string; text: string; done?: boolean }
+  | { type: "done"; scope: "multi"; model?: string; done: true }
+  | { type: "delta"; scope: "single"; node?: string; delta: string; done?: boolean }
+  | { type: "done"; scope: "single"; done: true };
+
+type Selection = { provider: string; model: string };
+type ChatMsg = { role: string; content: string };
+
+// Safe helpers for runtime narrowing
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  !!v && typeof v === "object";
+
+// Legacy /chat/* events
+const isNDJSONEvent = (e: unknown): e is NDJSONEvent => {
+  if (!isRecord(e) || typeof e.type !== "string") return false;
+  if (e.type === "all_done") return true;
+  return (
+    typeof (e as { provider?: unknown }).provider === "string" &&
+    typeof (e as { model?: unknown }).model === "string" &&
+    (e.type === "start" || e.type === "delta" || e.type === "end" || e.type === "error")
+  );
+};
+
+// /langgraph/* events
+const isLGEvent = (e: unknown): e is LGEvent => {
+  if (!isRecord(e) || typeof e.type !== "string" || typeof (e as { scope?: unknown }).scope !== "string") return false;
+
+  const scope = (e as { scope: string }).scope;
+  if (scope === "multi") {
+    if (e.type === "delta") {
+      return typeof (e as { model?: unknown }).model === "string" && typeof (e as { text?: unknown }).text === "string";
+    }
+    if (e.type === "done") return true;
+  }
+  if (scope === "single") {
+    if (e.type === "delta") return typeof (e as { delta?: unknown }).delta === "string";
+    if (e.type === "done") return true;
+  }
+  return false;
+};
+
+// --- Minimal SSE parser: collects "data:" lines until a blank line, then yields JSON payloads
+async function readSSE<T>(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onEvent: (obj: T) => void
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buf = "";
+  let dataBuf = ""; // accumulates data: lines for the current SSE event
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const raw of lines) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line === "") {
+        // blank line = end of one SSE event
+        const payload = dataBuf.trim();
+        if (payload) {
+          try {
+            const obj = JSON.parse(payload) as T;
+            onEvent(obj);
+          } catch {
+            // ignore malformed JSON
+          }
+        }
+        dataBuf = "";
+        continue;
+      }
+
+      if (line.startsWith(":")) {
+        // comment/heartbeat
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        // event name unused — the data payload includes "type"
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        // Accumulate multiple data lines for multi-line JSON payloads
+        const part = line.slice(5).trimStart();
+        dataBuf += part;
+        continue;
+      }
+
+      // Fallback: raw JSON without SSE prefix
+      if (line.startsWith("{") || line.startsWith("[")) {
+        try {
+          const obj = JSON.parse(line) as T;
+          onEvent(obj);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  // Flush any trailing JSON that might still be in the buffer
+  const tail = buf.trim();
+  if (tail.startsWith("data:")) {
+    try {
+      const obj = JSON.parse(tail.slice(5).trim()) as T;
+      onEvent(obj);
+    } catch {
+      // ignore
+    }
+  } else if (tail.startsWith("{") || tail.startsWith("[")) {
+    try {
+      const obj = JSON.parse(tail) as T;
+      onEvent(obj);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+// --- Group param shapes (same as backend expects) ---
+interface AnthropicGroupParams {
+  thinking_enabled?: boolean;
+  thinking_budget_tokens?: number;
+  top_k?: number;
+  top_p?: number;
+  stop_sequences?: string[];
+}
+
+interface OpenAIGroupParams {
+  top_p?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  seed?: number;
+}
+
+interface GeminiGroupParams {
+  top_k?: number;
+  top_p?: number;
+  candidate_count?: number;
+  safety_settings?: unknown[];
+}
+
+interface OllamaGroupParams {
+  mirostat?: number;
+  mirostat_eta?: number;
+  mirostat_tau?: number;
+  num_ctx?: number;
+  repeat_penalty?: number;
+}
+
+interface CohereGroupParams {
+  stop_sequences?: string[];
+  seed?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  k?: number;
+  p?: number;
+  logprobs?: boolean;
+}
+
+interface DeepseekGroupParams {
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  top_p?: number;
+  logprobs?: boolean;
+  top_logprobs?: number;
+}
+
+interface ChatRequestBody {
+  prompt: string;
+  selections: Selection[];
+  history?: ChatMsg[];
+  system?: string;
   temperature?: number;
   max_tokens?: number;
   min_tokens?: number;
-  anthropic_params?: {
-    thinking_enabled?: boolean;
-    thinking_budget_tokens?: number;
-    top_k?: number;
-    top_p?: number;
-    stop_sequences?: string[];
-  };
-  openai_params?: {
-    top_p?: number;
-    frequency_penalty?: number;
-    presence_penalty?: number;
-    seed?: number;
-  };
-  gemini_params?: {
-    top_k?: number;
-    top_p?: number;
-    candidate_count?: number;
-    safety_settings?: unknown[];
-  };
-  ollama_params?: {
-    mirostat?: number;
-    mirostat_eta?: number;
-    mirostat_tau?: number;
-    num_ctx?: number;
-    repeat_penalty?: number;
-  };
-  model_params?: Record<string, Partial<PerModelParam>>;
-};
+  model_params?: ModelParamsMap;
+  anthropic_params?: AnthropicGroupParams;
+  openai_params?: OpenAIGroupParams;
+  gemini_params?: GeminiGroupParams;
+  ollama_params?: OllamaGroupParams;
+  cohere_params?: CohereGroupParams;
+  deepseek_params?: DeepseekGroupParams;
+}
+
+// === Helper: model -> backend provider key (registry YAML `type`) ===
+function buildModelToProviderKeyMap(providers: ProviderInfo[]): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const p of providers) {
+    const key = (p.type || "").toLowerCase().trim();
+    const models = Array.isArray(p.models) ? p.models : [];
+    const embeds = Array.isArray(p.embedding_models) ? p.embedding_models : [];
+    for (const m of models) map[m] = key;
+    for (const m of embeds) map[m] = key;
+  }
+  return map;
+}
+
+// === UI-only: map provider key -> param editor wire
+function uiWireForProviderKey(provKey: string): ProviderWire {
+  if (provKey === "openai") return "openai";
+  if (provKey === "anthropic") return "anthropic";
+  if (provKey === "gemini") return "gemini";
+  if (provKey === "ollama") return "ollama";
+  if (provKey === "cohere") return "cohere";
+  if (provKey === "cerebras") return "openai";
+  if (provKey === "deepseek") return "deepseek";
+  return "unknown";
+}
+
+// === Build selections for /chat endpoints (legacy)
+function buildSelections(selected: string[], providerOf: (m: string) => string): Selection[] {
+  return selected.map((model) => ({ provider: providerOf(model), model }));
+}
+
+// === Build ChatRequest body for /chat/* (legacy)
+function buildChatRequestBody(opts: {
+  prompt: string;
+  selected: string[];
+  providerOf: (m: string) => string;
+  history?: ChatMsg[];
+  system?: string;
+  temperature?: number;
+  max_tokens?: number;
+  min_tokens?: number;
+  modelParams: ModelParamsMap;
+}): ChatRequestBody {
+  const {
+    prompt,
+    selected,
+    providerOf,
+    history,
+    system,
+    temperature,
+    max_tokens,
+    min_tokens,
+    modelParams,
+  } = opts;
+
+  const selections: Selection[] = buildSelections(selected, providerOf);
+
+  // Per-provider model splits
+  const provOf = providerOf;
+  const anthropicModels = selected.filter((m) => provOf(m) === "anthropic");
+  const openaiLikeModels = selected.filter((m) => ["openai", "cerebras"].includes(provOf(m)));
+  const geminiModels = selected.filter((m) => provOf(m) === "gemini");
+  const ollamaModels = selected.filter((m) => provOf(m) === "ollama");
+  const cohereModels = selected.filter((m) => provOf(m) === "cohere");
+  const deepseekModels = selected.filter((m) => provOf(m) === "deepseek");
+
+  // Helper: does an object contain any defined value?
+  const hasValues = <T extends object>(o: T): boolean =>
+    Object.values(o as Record<string, unknown>).some((v) => v !== undefined);
+
+  // Build group params by peeking the first model's params for that provider group
+  const anthropic_params: AnthropicGroupParams = {};
+  for (const m of anthropicModels) {
+    const p = modelParams[m] || {};
+    if (anthropic_params.thinking_enabled === undefined) anthropic_params.thinking_enabled = p.thinking_enabled as boolean | undefined;
+    if (anthropic_params.thinking_budget_tokens === undefined) anthropic_params.thinking_budget_tokens = p.thinking_budget_tokens as number | undefined;
+    if (anthropic_params.top_k === undefined) anthropic_params.top_k = p.top_k as number | undefined;
+    if (anthropic_params.top_p === undefined) anthropic_params.top_p = p.top_p as number | undefined;
+    if (anthropic_params.stop_sequences === undefined) anthropic_params.stop_sequences = p.stop_sequences as string[] | undefined;
+  }
+
+  const openai_params: OpenAIGroupParams = {};
+  for (const m of openaiLikeModels) {
+    const p = modelParams[m] || {};
+    if (openai_params.top_p === undefined) openai_params.top_p = p.top_p as number | undefined;
+    if (openai_params.frequency_penalty === undefined) openai_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (openai_params.presence_penalty === undefined) openai_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (openai_params.seed === undefined) openai_params.seed = p.seed as number | undefined;
+  }
+
+  const gemini_params: GeminiGroupParams = {};
+  for (const m of geminiModels) {
+    const p = modelParams[m] || {};
+    if (gemini_params.top_k === undefined) gemini_params.top_k = p.top_k as number | undefined;
+    if (gemini_params.top_p === undefined) gemini_params.top_p = p.top_p as number | undefined;
+    if (gemini_params.candidate_count === undefined) gemini_params.candidate_count = p.candidate_count as number | undefined;
+    if (gemini_params.safety_settings === undefined) gemini_params.safety_settings = p.safety_settings as unknown[] | undefined;
+  }
+
+  const ollama_params: OllamaGroupParams = {};
+  for (const m of ollamaModels) {
+    const p = modelParams[m] || {};
+    if (ollama_params.mirostat === undefined) ollama_params.mirostat = p.mirostat as number | undefined;
+    if (ollama_params.mirostat_eta === undefined) ollama_params.mirostat_eta = p.mirostat_eta as number | undefined;
+    if (ollama_params.mirostat_tau === undefined) ollama_params.mirostat_tau = p.mirostat_tau as number | undefined;
+    if (ollama_params.num_ctx === undefined) ollama_params.num_ctx = p.num_ctx as number | undefined;
+    if (ollama_params.repeat_penalty === undefined) ollama_params.repeat_penalty = p.repeat_penalty as number | undefined;
+  }
+
+  const cohere_params: CohereGroupParams = {};
+  for (const m of cohereModels) {
+    const p = modelParams[m] || {};
+    if (cohere_params.stop_sequences === undefined) cohere_params.stop_sequences = p.stop_sequences as string[] | undefined;
+    if (cohere_params.seed === undefined) cohere_params.seed = p.seed as number | undefined;
+    if (cohere_params.frequency_penalty === undefined) cohere_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (cohere_params.presence_penalty === undefined) cohere_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (cohere_params.k === undefined) cohere_params.k = p.k as number | undefined;
+    if (cohere_params.p === undefined) cohere_params.p = p.p as number | undefined;
+    if (cohere_params.logprobs === undefined) cohere_params.logprobs = p.logprobs as boolean | undefined;
+  }
+
+  const deepseek_params: DeepseekGroupParams = {};
+  for (const m of deepseekModels) {
+    const p = modelParams[m] || {};
+    if (deepseek_params.frequency_penalty === undefined) deepseek_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (deepseek_params.presence_penalty === undefined) deepseek_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (deepseek_params.top_p === undefined) deepseek_params.top_p = p.top_p as number | undefined;
+    if (deepseek_params.logprobs === undefined) deepseek_params.logprobs = p.logprobs as boolean | undefined;
+    if (deepseek_params.top_logprobs === undefined) deepseek_params.top_logprobs = p.top_logprobs as number | undefined;
+  }
+
+  // Assemble final body
+  const body: ChatRequestBody = { prompt, selections };
+
+  if (history?.length) body.history = history;
+  if (system) body.system = system;
+  if (temperature !== undefined) body.temperature = temperature;
+  if (max_tokens !== undefined) body.max_tokens = max_tokens;
+  if (min_tokens !== undefined) body.min_tokens = min_tokens;
+  if (Object.keys(modelParams).length) body.model_params = modelParams;
+
+  if (hasValues(anthropic_params)) body.anthropic_params = anthropic_params;
+  if (hasValues(openai_params)) body.openai_params = openai_params;
+  if (hasValues(gemini_params)) body.gemini_params = gemini_params;
+  if (hasValues(ollama_params)) body.ollama_params = ollama_params;
+  if (hasValues(cohere_params)) body.cohere_params = cohere_params;
+  if (hasValues(deepseek_params)) body.deepseek_params = deepseek_params;
+
+  return body;
+}
+
+
+// === LangGraph helpers ===
+function toWire(providerKey: string, model: string): string {
+  return `${providerKey}:${model}`;
+}
+
+function buildLangGraphMultiBody(opts: {
+  prompt: string;
+  selected: string[];
+  providerOf: (m: string) => string;
+  history?: { role: string; content: string }[];
+  perModelParams: Record<string, Record<string, unknown>>;
+}): { targets: string[]; messages: ChatMsg[]; per_model_params: Record<string, Record<string, unknown>> } {
+  const { prompt, selected, providerOf, history, perModelParams } = opts;
+  const targets = selected.map((m) => toWire(providerOf(m), m));
+  const messages: ChatMsg[] = [...(history || []), { role: "user", content: prompt }];
+  const per_model_params: Record<string, Record<string, unknown>> = {};
+  for (const m of selected) {
+    const wire = toWire(providerOf(m), m);
+    per_model_params[wire] = perModelParams[m] || {};
+  }
+  return { targets, messages, per_model_params };
+}
 
 export default function CompareLLMClient(): JSX.Element {
   // ==== STATE ====
@@ -75,7 +430,12 @@ export default function CompareLLMClient(): JSX.Element {
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
+
+  // ---- embeddings state
   const [allEmbeddingModels, setAllEmbeddingModels] = useState<string[]>([]);
+  const [stores, setStores] = useState<Record<string, string>>({}); // {storeId: embeddingKey}
+  const [datasets, setDatasets] = useState<Dataset[]>([]);
+
   const [selected, setSelected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
@@ -87,33 +447,28 @@ export default function CompareLLMClient(): JSX.Element {
   const [modelChats, setModelChats] = useState<Record<string, ModelChat>>({});
   const [interactivePrompt, setInteractivePrompt] = useState<string>("");
 
-  // Embeddings
-  const [datasets, setDatasets] = useState<Dataset[]>([]);
+  // Embeddings UI state
   const [selectedEmbeddingModels, setSelectedEmbeddingModels] = useState<string[]>([]);
   const [selectedDataset, setSelectedDataset] = useState<string>("");
+  const [selectedCompareDataset, setSelectedCompareDataset] = useState<string>(""); // NEW: compare dataset
   const [selectedSearchModel, setSelectedSearchModel] = useState<string>("");
   const [uploadingDataset, setUploadingDataset] = useState(false);
-  const [searchQuery, setSearchQuery] = useState<string>("");
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false); // kept for API shape
   const [jsonInput, setJsonInput] = useState<string>("");
   const [datasetId, setDatasetId] = useState<string>("");
   const [textField, setTextField] = useState<string>("text");
+  const [searchQuery, setSearchQuery] = useState<string>("");
   const [compareQuery, setCompareQuery] = useState<string>("");
+
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearchingSingle, setIsSearchingSingle] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
-  const [searchContext, setSearchContext] = useState<{
-    model: string;
-    dataset: string;
-    query: string;
-    startedAt: number;
-  } | null>(null);
+  const [searchContext, setSearchContext] = useState<{ model: string; dataset: string; query: string; startedAt: number } | null>(null);
   const [multiSearchResults, setMultiSearchResults] = useState<MultiSearchResponse | null>(null);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const streamAbortRef = useRef<AbortController | null>(null);
   const interactiveAbortRef = useRef<AbortController | null>(null);
-  const chatBottomRef = useRef<HTMLDivElement | null>(null); // (unused)
+  const promptRef = useRef<HTMLTextAreaElement | null>(null);
   const requestIdRef = useRef(0);
 
   const [modelParams, setModelParams] = useState<ModelParamsMap>({});
@@ -122,17 +477,36 @@ export default function CompareLLMClient(): JSX.Element {
   const [globalMin, setGlobalMin] = useState<number | undefined>(undefined);
   const [topKSingle, setTopKSingle] = useState<number>(5);
   const [topKCompare, setTopKCompare] = useState<number>(5);
-  const useEnhancedAPI = true;
-
-  // Expanded parameter sections (per model)
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
-
-  // NEW: track last run prompt + input focus ref (for Reprompt)
   const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
-  const promptRef = useRef<HTMLTextAreaElement | null>(null);
+
+  // One shared conversation id for both /multi and /single calls
+  const [threadId] = useState<string>(() => {
+    const uuid =
+      (typeof crypto !== "undefined" && "randomUUID" in crypto && crypto.randomUUID()) ||
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `thread:${uuid}`;
+  });
+
+  // ==== LIVE REFS to avoid stale-closure on immediate Run after typing/changing params ====
+  const modelParamsRef = useRef<ModelParamsMap>({});
+  const globalTempRef = useRef<number | undefined>(undefined);
+  const globalMaxRef = useRef<number | undefined>(undefined);
+  const globalMinRef = useRef<number | undefined>(undefined);
+  const promptRefLive = useRef<string>("");
+  const selectedRef = useRef<string[]>([]);
+  const modelChatsRef = useRef<Record<string, ModelChat>>({});
+
+  useEffect(() => { modelParamsRef.current = modelParams; }, [modelParams]);
+  useEffect(() => { globalTempRef.current = globalTemp; }, [globalTemp]);
+  useEffect(() => { globalMaxRef.current = globalMax; }, [globalMax]);
+  useEffect(() => { globalMinRef.current = globalMin; }, [globalMin]);
+  useEffect(() => { promptRefLive.current = prompt; }, [prompt]);
+  useEffect(() => { selectedRef.current = selected; }, [selected]);
+  useEffect(() => { modelChatsRef.current = modelChats; }, [modelChats]);
 
   // ==== MEMO MAPS ====
-  const modelToProvider = useMemo(() => {
+  const modelToBrand = useMemo(() => {
     const map: Record<string, ProviderBrand> = {};
     providers.forEach((p) => {
       (p.models || []).forEach((m) => (map[m] = coerceBrand(p.type)));
@@ -141,65 +515,323 @@ export default function CompareLLMClient(): JSX.Element {
     return map;
   }, [providers]);
 
-  const modelToWire = useMemo(() => {
-    const map: Record<string, ProviderWire> = {};
-    providers.forEach((p) => {
-      const wire = coerceWire(p);
-      (p.models || []).forEach((m) => (map[m] = wire));
-      (p.embedding_models || []).forEach((m) => (map[m] = wire));
-    });
-    return map;
-  }, [providers]);
+  const modelToProviderKey = useMemo(() => buildModelToProviderKeyMap(providers), [providers]);
+  const getProviderType = useCallback((m: string): ProviderBrand => {
+    const s = (m || "").toLowerCase();
+    const prefix = s.split(":", 1)[0];
+    if (PREFIX_TO_BRAND[prefix]) return PREFIX_TO_BRAND[prefix] as ProviderBrand;
+    if (modelToBrand[m]) return modelToBrand[m];
+    return coerceBrand(m);
+  }, [modelToBrand]);
+  const getProviderKey = useCallback((m: string): string => modelToProviderKey[m] ?? "unknown", [modelToProviderKey]);
 
-  const getProviderType = useCallback((m: string): ProviderBrand => modelToProvider[m] ?? "unknown", [modelToProvider]);
-  const getProviderWire = useCallback((m: string): ProviderWire => modelToWire[m] ?? "unknown", [modelToWire]);
-
-  // ==== LOAD PROVIDERS ====
+  // ==== LOAD PROVIDERS + EMBEDDINGS (models & stores) ====
   useEffect(() => {
-    const load = async () => {
+    const isString = (x: unknown): x is string => typeof x === "string";
+    const pickModelName = (v: unknown): string | null => {
+      if (typeof v === "string") return v;
+      if (v && typeof v === "object") {
+        const o = v as Record<string, unknown>;
+        if (isString(o.model)) return o.model;
+        if (isString(o.name)) return o.name;
+        if (isString(o.id)) return o.id;
+      }
+      return null;
+    };
+
+    const load = async (): Promise<void> => {
       setLoadingProviders(true);
       try {
+        // Providers
         const res = await fetch(`${API_BASE}/providers`, { cache: "no-store" });
-        if (!res.ok) throw new Error(`Failed to load providers: ${res.statusText}`);
-        const data = (await res.json()) as ProvidersResp;
-        setProviders(data.providers);
-        const models = [...new Set(data.providers.flatMap((p) => p.models))].sort();
-        const embeddingModels = [...new Set(data.providers.flatMap((p) => p.embedding_models || []))].sort();
-        setAllModels(models);
-        setAllEmbeddingModels(embeddingModels);
-        if (embeddingModels.length > 0) setSelectedSearchModel(embeddingModels[0]);
+        if (!res.ok) throw new Error(`Failed to load providers: ${res.status} ${res.statusText}`);
+        const raw = (await res.json()) as unknown;
+
+        const provsUnknown: unknown = Array.isArray(raw)
+          ? raw
+          : Array.isArray((raw as { providers?: unknown })?.providers)
+          ? (raw as { providers: unknown[] }).providers
+          : (raw as { providers?: unknown })?.providers && typeof (raw as { providers?: unknown })?.providers === "object"
+          ? Object.values((raw as { providers: Record<string, unknown> }).providers)
+          : [];
+
+        const arr = Array.isArray(provsUnknown) ? provsUnknown : [];
+
+        const normalized: ProviderInfo[] = arr.map((item, idx) => {
+          const p = (item ?? {}) as Record<string, unknown>;
+          const name =
+            isString(p.name) ? p.name : isString(p.key) ? p.key : isString(p.id) ? p.id : `prov_${idx}`;
+          const type = isString(p.type) ? p.type : "unknown";
+          const base_url = isString(p.base_url) ? p.base_url : "";
+
+          const rawModels = Array.isArray(p.models)
+            ? p.models
+            : Array.isArray((p as { chat_models?: unknown[] }).chat_models)
+            ? (p as { chat_models: unknown[] }).chat_models
+            : Array.isArray((p as { llm_models?: unknown[] }).llm_models)
+            ? (p as { llm_models: unknown[] }).llm_models
+            : [];
+          const models = rawModels.map(pickModelName).filter((m): m is string => !!m);
+
+          const rawEmb = Array.isArray(p.embedding_models)
+            ? p.embedding_models
+            : Array.isArray((p as { embed_models?: unknown[] }).embed_models)
+            ? (p as { embed_models: unknown[] }).embed_models
+            : [];
+          const embedding_models = rawEmb.map(pickModelName).filter((m): m is string => !!m);
+
+          const auth_required =
+            typeof p.auth_required === "boolean"
+              ? (p.auth_required as boolean)
+              : typeof (p as { requires_api_key?: unknown }).requires_api_key === "boolean"
+              ? Boolean((p as { requires_api_key: boolean }).requires_api_key)
+              : isString((p as { api_key_env?: unknown }).api_key_env);
+
+          return { name, type, base_url, models, embedding_models, auth_required };
+        });
+
+        setProviders(normalized);
+        setAllModels([...new Set(normalized.flatMap((p) => p.models ?? []))].sort());
+
+        // Embedding models & stores
+        const [embM, storesRes] = await Promise.all([listEmbeddingModels(), listStores()]);
+        setAllEmbeddingModels(embM.embedding_models || []);
+        setStores(storesRes.stores || {});
+        if (embM.embedding_models?.length && !selectedSearchModel) {
+          setSelectedSearchModel(embM.embedding_models[0]);
+        }
+
+        // build datasets from stores
+        const byDataset = groupStoresByDataset(storesRes.stores || {});
+        const ds: Dataset[] = Object.keys(byDataset)
+          .sort()
+          .map((id) => ({ dataset_id: id } as Dataset));
+        setDatasets(ds);
       } finally {
         setLoadingProviders(false);
       }
     };
+
     void load();
+  }, [selectedSearchModel]);
+
+  // =============================
+  // Embeddings: upload/index via /embeddings/*
+  // =============================
+  const refreshStoresAndDatasets = useCallback(async () => {
+    const s = await listStores();
+    setStores(s.stores || {});
+    const byDataset = groupStoresByDataset(s.stores || {});
+    const ds: Dataset[] = Object.keys(byDataset)
+      .sort()
+      .map((id) => ({ dataset_id: id } as Dataset));
+    setDatasets(ds);
   }, []);
 
-  // ==== SELECTION HANDLERS ====
+  const uploadDataset = useCallback(async () => {
+    if (!jsonInput.trim() || !datasetId.trim() || selectedEmbeddingModels.length === 0) {
+      alert("Please provide dataset ID, JSON data, and select at least one embedding model.");
+      return;
+    }
+
+    let docs: IndexDoc[] = [];
+    try {
+      const parsed = JSON.parse(jsonInput) as unknown;
+      const arr = Array.isArray(parsed) ? parsed : [parsed];
+      docs = toDocsFromJsonArray(arr, textField);
+      if (!docs.length) {
+        alert(`No valid docs. Ensure "${textField}" exists and is a non-empty string.`);
+        return;
+      }
+    } catch {
+      alert("Invalid JSON");
+      return;
+    }
+
+    setUploadingDataset(true);
+    try {
+      const results = await Promise.allSettled(
+        selectedEmbeddingModels.map(async (embeddingModel) => {
+          const storeId = makeStoreId(datasetId.trim(), embeddingModel.trim());
+          try {
+            await createStore(storeId, embeddingModel);
+          } catch {
+            // store may already exist; continue
+          }
+          await indexDocs(storeId, docs);
+          return storeId;
+        })
+      );
+
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      const bad = results.filter((r) => r.status === "rejected");
+      let msg = `Embedded & indexed for ${ok} model(s).`;
+      if (bad.length) {
+        msg +=
+          `\n${bad.length} failed:\n` +
+          bad
+            .map((r) => (r as PromiseRejectedResult).reason?.message || String((r as PromiseRejectedResult).reason))
+            .join("\n");
+      }
+      alert(msg);
+
+      setJsonInput("");
+      setDatasetId("");
+      await refreshStoresAndDatasets();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Upload failed:", err);
+      alert(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+    } finally {
+      setUploadingDataset(false);
+    }
+  }, [jsonInput, datasetId, selectedEmbeddingModels, textField, refreshStoresAndDatasets]);
+
+  // =============================
+  // Embeddings: single-model search
+  // =============================
+  const performSearch = useCallback(async () => {
+    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
+      alert("Please provide search query, select a dataset, and select a search model.");
+      return;
+    }
+    const snapshot = {
+      query: searchQuery.trim(),
+      dataset: selectedDataset.trim(),
+      model: selectedSearchModel.trim(),
+      startedAt: Date.now(),
+    };
+
+    setIsSearchingSingle(true);
+    const myId = ++requestIdRef.current;
+
+    try {
+      const sid = makeStoreId(snapshot.dataset, snapshot.model);
+      const { matches } = await queryStore(sid, snapshot.query, { k: topKSingle, with_scores: true, search_type: "similarity" });
+
+      const rows: SearchResult[] = matches.map((m) => {
+        const base: Record<string, unknown> = { ...(m.metadata || {}) };
+        (base as { text: string }).text = m.page_content;
+        if (typeof m.score === "number") (base as { similarity_score: number }).similarity_score = m.score;
+        return base as SearchResult;
+      });
+
+      if (myId === requestIdRef.current) {
+        setSearchResults(rows);
+        setSearchContext(snapshot);
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Search failed:", err);
+      if (myId === requestIdRef.current) {
+        alert(`Search failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setSearchResults([]);
+        setSearchContext(null);
+      }
+    } finally {
+      if (myId === requestIdRef.current) setIsSearchingSingle(false);
+    }
+  }, [searchQuery, selectedDataset, selectedSearchModel, topKSingle]);
+
+  // =============================
+  // Embeddings: multi-model compare (NEW: hits backend /embeddings/compare)
+  // =============================
+  const performMultiSearch = useCallback(async () => {
+    if (!compareQuery.trim()) {
+      alert("Please provide a comparison query.");
+      return;
+    }
+    if (selectedEmbeddingModels.length === 0) {
+      alert("Select at least one embedding model (left rail) to compare.");
+      return;
+    }
+    if (!selectedCompareDataset.trim()) {
+      alert("Select a dataset for comparison.");
+      return;
+    }
+
+    const started = Date.now();
+    setIsComparing(true);
+    setMultiSearchResults(null);
+    const myId = ++requestIdRef.current;
+
+    try {
+      const res = await fetch(`${API_BASE}/embeddings/compare`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          dataset_id: selectedCompareDataset.trim(),
+          embedding_models: selectedEmbeddingModels.map((s) => s.trim()),
+          query: compareQuery.trim(),
+          k: topKCompare,
+        }),
+      });
+
+      if (!res.ok) {
+        const err = (await res.json().catch(() => ({}))) as { detail?: string };
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+
+      const json = (await res.json()) as MultiSearchResponse;
+      const payload: MultiSearchResponse = {
+        ...json,
+        duration_ms: typeof json.duration_ms === "number" ? json.duration_ms : Date.now() - started,
+      };
+
+      if (myId === requestIdRef.current) setMultiSearchResults(payload);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("Compare failed:", err);
+      if (myId === requestIdRef.current) {
+        alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
+        setMultiSearchResults(null);
+      }
+    } finally {
+      if (myId === requestIdRef.current) setIsComparing(false);
+    }
+  }, [API_BASE, compareQuery, selectedEmbeddingModels, selectedCompareDataset, topKCompare]);
+
+  // =============================
+  // Embeddings: delete dataset (delete all its stores)
+  // =============================
+  const deleteDataset = useCallback(
+    async (id: string) => {
+      if (!confirm(`Delete dataset "${id}"? This will remove all of its embedding stores.`)) return;
+      try {
+        const toDelete = Object.keys(stores).filter((sid) => sid.startsWith(`${id}::`));
+        await Promise.allSettled(toDelete.map((sid) => deleteStore(sid)));
+        await refreshStoresAndDatasets();
+        if (selectedDataset === id) setSelectedDataset("");
+        if (selectedCompareDataset === id) setSelectedCompareDataset("");
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("Delete failed:", err);
+      }
+    },
+    [stores, refreshStoresAndDatasets, selectedDataset, selectedCompareDataset]
+  );
+
+  // =============================
+  // Chat tab
+  // =============================
   const toggleModel = (m: string) =>
     setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]));
   const selectAll = () => setSelected(allModels);
   const clearAll = () => setSelected([]);
 
-  // Auto-expand on selection, collapse on deselection
   const prevSelectedRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const prev = prevSelectedRef.current;
     const next = new Set(selected);
-
     const removed = [...prev].filter((m) => !next.has(m));
-
     setExpandedModels((prevExp) => {
       const ns = new Set(prevExp);
-      // Do NOT auto-expand newly added models
-      removed.forEach((m) => ns.delete(m)); // collapse when deselected
+      removed.forEach((m) => ns.delete(m));
       return ns;
     });
-
     prevSelectedRef.current = next;
   }, [selected]);
 
-  // ==== PARAM HANDLERS ====
   const updateParam = useCallback((model: string, params: PerModelParam) => {
     setModelParams((prev) => ({ ...prev, [model]: params }));
   }, []);
@@ -212,51 +844,41 @@ export default function CompareLLMClient(): JSX.Element {
   }, []);
   const handleRemoveModel = useCallback((model: string) => {
     setAnswers((prev) => {
-      const next = { ...prev };
+      const next: AskAnswers = { ...prev };
       delete next[model];
       return next;
     });
   }, []);
 
-  // =============================
-  // Interactive Chat
-  // =============================
   const openModelChat = useCallback(
     (model: string) => {
       setActiveModel(model);
       setModelChats((prev) => {
         if (prev[model]) return prev;
-        const initialMessages: ModelChat["messages"] = [];
-        if (prompt.trim()) {
-          initialMessages.push({ role: "user", content: prompt.trim(), timestamp: Date.now() });
-        }
+        const initial: ModelChat["messages"] = [];
+        if (promptRefLive.current.trim()) initial.push({ role: "user", content: promptRefLive.current.trim(), timestamp: Date.now() });
         const modelAnswer = answers[model];
         if (modelAnswer?.answer && !modelAnswer.error) {
-          initialMessages.push({ role: "assistant", content: modelAnswer.answer, timestamp: Date.now() });
+          initial.push({ role: "assistant", content: modelAnswer.answer, timestamp: Date.now() });
         }
-        return { ...prev, [model]: { messages: initialMessages, isStreaming: false, currentResponse: "" } };
+        return { ...prev, [model]: { messages: initial, isStreaming: false, currentResponse: "" } };
       });
     },
-    [answers, prompt]
+    [answers]
   );
-
   const closeModelChat = useCallback(() => {
     setActiveModel(null);
     interactiveAbortRef.current?.abort();
   }, []);
 
-  const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> => {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(obj)) if (v !== undefined) out[k] = v;
-    return out as Partial<T>;
-  };
+  const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
+    pruneUndefBrandUtils(obj);
 
+  // === Interactive chat via LangGraph single-stream (SSE) ===
   const sendInteractiveMessage = useCallback(async () => {
     if (!activeModel || !interactivePrompt.trim()) return;
-
     const message = interactivePrompt.trim();
     setInteractivePrompt("");
-
     setModelChats((prev) => ({
       ...prev,
       [activeModel]: {
@@ -272,119 +894,60 @@ export default function CompareLLMClient(): JSX.Element {
     interactiveAbortRef.current = controller;
 
     try {
-      const currentChat = modelChats[activeModel] || { messages: [] as ModelChat["messages"] };
+      const currentChat = modelChatsRef.current[activeModel] || { messages: [] as ModelChat["messages"] };
       const conversationHistory = [
         ...currentChat.messages,
         { role: "user" as const, content: message, timestamp: Date.now() },
       ];
-      const apiMessages = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
+      const apiMessages: ChatMsg[] = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
 
-      const modelParam = modelParams[activeModel] || {};
-      const providerWire = getProviderWire(activeModel);
-      const hasProviderParams = Object.keys(modelParam).some(
-        (k) => !["temperature", "max_tokens", "min_tokens"].includes(k)
-      );
-
-      let endpoint = "";
-      let body = "";
-
-      if (useEnhancedAPI || hasProviderParams) {
-        endpoint = `${API_BASE}/v2/chat/completions/enhanced`;
-        const enhancedRequest: EnhancedChatRequest = {
-          messages: apiMessages,
-          models: [activeModel],
-        };
-        const t = modelParam.temperature ?? globalTemp;
-        const mx = modelParam.max_tokens ?? globalMax;
-        const mn = modelParam.min_tokens ?? globalMin;
-        if (t !== undefined) enhancedRequest.temperature = t;
-        if (mx !== undefined) enhancedRequest.max_tokens = mx;
-        if (mn !== undefined) enhancedRequest.min_tokens = mn;
-
-        if (providerWire === "anthropic") {
-          const p: NonNullable<EnhancedChatRequest["anthropic_params"]> = pruneUndefined({
-            thinking_enabled: modelParam.thinking_enabled,
-            thinking_budget_tokens: modelParam.thinking_budget_tokens,
-            top_k: modelParam.top_k,
-            top_p: modelParam.top_p,
-            stop_sequences: modelParam.stop_sequences,
-          });
-          if (Object.keys(p).length) enhancedRequest.anthropic_params = p;
-        } else if (providerWire === "openai") {
-          const p: NonNullable<EnhancedChatRequest["openai_params"]> = pruneUndefined({
-            top_p: modelParam.top_p,
-            frequency_penalty: modelParam.frequency_penalty,
-            presence_penalty: modelParam.presence_penalty,
-            seed: modelParam.seed,
-          });
-          if (Object.keys(p).length) enhancedRequest.openai_params = p;
-        } else if (providerWire === "gemini") {
-          const p: NonNullable<EnhancedChatRequest["gemini_params"]> = pruneUndefined({
-            top_k: modelParam.top_k,
-            top_p: modelParam.top_p,
-            candidate_count: modelParam.candidate_count,
-            safety_settings: modelParam.safety_settings,
-          });
-          if (Object.keys(p).length) enhancedRequest.gemini_params = p;
-        } else if (providerWire === "ollama") {
-          const p: NonNullable<EnhancedChatRequest["ollama_params"]> = pruneUndefined({
-            mirostat: modelParam.mirostat,
-            mirostat_eta: modelParam.mirostat_eta,
-            mirostat_tau: modelParam.mirostat_tau,
-            num_ctx: modelParam.num_ctx,
-            repeat_penalty: modelParam.repeat_penalty,
-          });
-          if (Object.keys(p).length) enhancedRequest.ollama_params = p;
-        }
-
-        body = JSON.stringify(enhancedRequest);
-      } else {
-        endpoint = `${API_BASE}/v1/chat/completions`;
-        const stdPayload: Record<string, unknown> = {
-          model: activeModel,
-          messages: apiMessages,
-          stream: false,
-        };
-        const temp = modelParam.temperature ?? globalTemp;
-        const maxTok = modelParam.max_tokens ?? globalMax;
-        if (temp !== undefined) stdPayload.temperature = temp;
-        if (maxTok !== undefined) stdPayload.max_tokens = maxTok;
-        body = JSON.stringify(stdPayload);
-      }
-
-      const res = await fetch(endpoint, {
+      const wire = toWire(getProviderKey(activeModel), activeModel);
+      const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          wire,
+          messages: apiMessages, // include the latest user message
+          model_params: modelParamsRef.current[activeModel] || {},
+          thread_id: threadId,   // shared thread for memory
+        }),
         signal: controller.signal,
       });
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
-      if (!res.ok) {
-        const errorData = (await res.json().catch(() => ({ detail: res.statusText }))) as { detail?: string };
-        throw new Error(errorData.detail || `HTTP ${res.status}`);
-      }
-
-      type EnhancedResp = { answers?: AskAnswers };
-      type OpenAIResp = { choices?: { message?: { content?: string } }[] };
-      const result = (await res.json()) as unknown;
-
-      const assistantMessage: string =
-        useEnhancedAPI || hasProviderParams
-          ? (result as EnhancedResp).answers?.[activeModel]?.answer || "No response"
-          : (result as OpenAIResp).choices?.[0]?.message?.content || "No response";
-
-      setModelChats((prev) => ({
-        ...prev,
-        [activeModel]: {
-          ...prev[activeModel],
-          messages: [
-            ...(prev[activeModel]?.messages || []),
-            { role: "assistant", content: assistantMessage, timestamp: Date.now() },
-          ],
-          isStreaming: false,
-          currentResponse: "",
-        },
-      }));
+      const reader = res.body.getReader();
+      await readSSE<LGEvent>(reader, (evt) => {
+        if (evt.type === "delta" && evt.scope === "single") {
+          const piece = evt.delta || "";
+          setModelChats((prev) => ({
+            ...prev,
+            [activeModel]: {
+              ...(prev[activeModel] || { messages: [] }),
+              isStreaming: true,
+              currentResponse: (prev[activeModel]?.currentResponse || "") + piece,
+            },
+          }));
+        } else if (evt.type === "done" && evt.scope === "single") {
+          setModelChats((prev) => {
+            const streamed = prev[activeModel]?.currentResponse || "";
+            return {
+              ...prev,
+              [activeModel]: {
+                ...(prev[activeModel] || { messages: [] }),
+                isStreaming: false,
+                currentResponse: "",
+                messages: [
+                  ...(prev[activeModel]?.messages || []),
+                  { role: "assistant", content: streamed, timestamp: Date.now() },
+                ],
+              },
+            };
+          });
+        }
+      });
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === "AbortError";
       if (!isAbort) {
@@ -405,283 +968,162 @@ export default function CompareLLMClient(): JSX.Element {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, modelChats, modelParams, getProviderWire, globalTemp, globalMax, globalMin]);
+  }, [activeModel, interactivePrompt, getProviderKey, threadId]);
 
-  // =============================
-  // Providers / datasets
-  // =============================
-  const loadDatasets = useCallback(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/datasets`);
-      if (!res.ok) return;
-      const data = (await res.json()) as { datasets?: Dataset[] };
-      setDatasets(data.datasets || []);
-    } catch (err) {
-      console.error("Failed to load datasets:", err);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeTab === "embedding") void loadDatasets();
-  }, [activeTab, loadDatasets]);
-
-  const uploadDataset = useCallback(async () => {
-    if (!jsonInput.trim() || !datasetId.trim() || selectedEmbeddingModels.length === 0) {
-      alert("Please provide dataset ID, JSON data, and select at least one embedding model.");
-      return;
-    }
-    try {
-      const documents = JSON.parse(jsonInput) as unknown;
-      if (!Array.isArray(documents)) {
-        alert("JSON must be an array of documents.");
-        return;
-      }
-      setUploadingDataset(true);
-      const uploadPromises = selectedEmbeddingModels.map(async (embeddingModel) => {
-        const res = await fetch(`${API_BASE}/upload-dataset`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            dataset_id: datasetId,
-            documents,
-            embedding_model: embeddingModel,
-            text_field: textField,
-          }),
-        });
-        if (!res.ok) {
-          const error = await res.text();
-          throw new Error(`${embeddingModel}: ${error}`);
-        }
-        return (await res.json()) as unknown;
-      });
-      const results = await Promise.allSettled(uploadPromises);
-      const successful = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.filter((r) => r.status === "rejected").length;
-      let message = `Successfully uploaded with ${successful} embedding model(s).`;
-      if (failed > 0) {
-        const errors = results
-          .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-          .map((r) => (r.reason as Error)?.message)
-          .join("\n");
-        message += `\n\nFailed with ${failed} model(s):\n${errors}`;
-      }
-      alert(message);
-      setJsonInput("");
-      setDatasetId("");
-      await loadDatasets();
-    } catch (err) {
-      console.error("Upload failed:", err);
-      alert(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-    } finally {
-      setUploadingDataset(false);
-    }
-  }, [jsonInput, datasetId, selectedEmbeddingModels, textField, loadDatasets]);
-
-  const performSearch = useCallback(async () => {
-    if (!searchQuery.trim() || !selectedDataset || !selectedSearchModel) {
-      alert("Please provide search query, select a dataset, and select a search model.");
-      return;
-    }
-    const snapshot = {
-      query: searchQuery,
-      dataset: selectedDataset,
-      model: selectedSearchModel,
-      startedAt: Date.now(),
-    };
-
-    setIsSearchingSingle(true);
-    const myId = ++requestIdRef.current;
-    try {
-      const res = await fetch(`${API_BASE}/search/semantic`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: snapshot.query,
-          embedding_model: snapshot.model,
-          dataset_id: snapshot.dataset,
-          top_k: topKSingle || 5,
-        }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      const result = (await res.json()) as { results?: SearchResult[] };
-      if (myId === requestIdRef.current) {
-        setSearchResults(result.results || []);
-        setSearchContext(snapshot);
-      }
-    } catch (err) {
-      console.error("Search failed:", err);
-      if (myId === requestIdRef.current) {
-        alert(`Search failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-        setSearchResults([]);
-        setSearchContext(null);
-      }
-    } finally {
-      if (myId === requestIdRef.current) setIsSearchingSingle(false);
-    }
-  }, [searchQuery, selectedDataset, selectedSearchModel, topKSingle]);
-
-  const performMultiSearch = useCallback(async () => {
-    if (!compareQuery.trim()) {
-      alert("Please provide a comparison query.");
-      return;
-    }
-    if (selectedEmbeddingModels.length === 0) {
-      alert("Select at least one embedding model (left rail) to compare.");
-      return;
-    }
-
-    setIsComparing(true);
-    setMultiSearchResults(null);
-    const myId = ++requestIdRef.current;
-
-    try {
-      const res = await fetch(`${API_BASE}/v2/search/self-dataset-compare`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          query: compareQuery,
-          embedding_models: selectedEmbeddingModels,
-          top_k: topKCompare || 5,
-        }),
-      });
-
-      if (!res.ok) {
-        let msg = await res.text();
-        try {
-          msg = (JSON.parse(msg) as { detail?: string }).detail || msg;
-        } catch {
-          /* noop */
-        }
-        throw new Error(msg || `HTTP ${res.status}`);
-      }
-
-      const json = (await res.json()) as MultiSearchResponse;
-      if (myId === requestIdRef.current) setMultiSearchResults(json);
-    } catch (err) {
-      console.error("Self-dataset compare failed:", err);
-      if (myId === requestIdRef.current) {
-        alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
-        setMultiSearchResults(null);
-      }
-    } finally {
-      if (myId === requestIdRef.current) setIsComparing(false);
-    }
-  }, [compareQuery, selectedEmbeddingModels, topKCompare]);
-
-  const deleteDataset = useCallback(
-    async (id: string) => {
-      if (!confirm(`Are you sure you want to delete dataset "${id}"?`)) return;
-      try {
-        const res = await fetch(`${API_BASE}/datasets/${id}`, { method: "DELETE" });
-        if (res.ok) {
-          await loadDatasets();
-          if (selectedDataset === id) setSelectedDataset("");
-        }
-      } catch (err) {
-        console.error("Delete failed:", err);
-      }
-    },
-    [loadDatasets, selectedDataset]
-  );
-
-  // =============================
-  // Run Prompt (streaming + non-stream)
-  // =============================
+  // Providers-only chat streaming bits
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
 
   const resetRun = useCallback(() => {
-    setAnswers(
-      Object.fromEntries(selected.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])) as AskAnswers
-    );
+    const initial: AskAnswers = Object.fromEntries(
+      selectedRef.current.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])
+    ) as AskAnswers;
+    setAnswers(initial);
     setStartedAt(Date.now());
     setEndedAt(null);
-  }, [selected]);
+  }, []);
 
+  // === Run (LangGraph MULTI stream via SSE) ===
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
-
-    // cancel previous stream
     streamAbortRef.current?.abort();
     const controller = new AbortController();
     streamAbortRef.current = controller;
 
     resetRun();
     setIsRunning(true);
-    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
+    setLastRunPrompt(promptRefLive.current.trim());
 
-    const processEvent = (evt: StreamEvent) => {
-      if (evt.type === "chunk") {
-        setAnswers((prev) => ({
-          ...prev,
-          [evt.model]: {
-            answer: (prev[evt.model]?.answer || "") + (evt.answer || ""),
-            error: evt.error,
-            latency_ms: evt.latency_ms,
-          },
-        }));
-      } else if (evt.type === "done") {
-        setIsRunning(false);
-        setEndedAt(Date.now());
-        streamAbortRef.current = null;
+    // Build wire<->model maps for this run
+    const selectedNow = [...selectedRef.current];
+    const wireForModel: Record<string, string> = Object.fromEntries(
+      selectedNow.map((m) => [m, toWire(getProviderKey(m), m)])
+    );
+    const modelForWire: Record<string, string> = Object.fromEntries(
+      selectedNow.map((m) => [wireForModel[m], m])
+    );
+
+    const startedAtRun = Date.now();
+    const modelStart: Record<string, number> = {}; // latency starts on first delta per model
+
+    const processEvent = (evt: NDJSONEvent | LGEvent | unknown): void => {
+      // Legacy /chat/* shape
+      if (isNDJSONEvent(evt)) {
+        if (evt.type === "start") {
+          modelStart[evt.model] = Date.now();
+          return;
+        }
+        if (evt.type === "delta") {
+          setAnswers((prev) => ({
+            ...prev,
+            [evt.model]: {
+              answer: (prev[evt.model]?.answer || "") + (evt.text || ""),
+              error: prev[evt.model]?.error,
+              latency_ms: prev[evt.model]?.latency_ms ?? 0,
+            },
+          }));
+          return;
+        }
+        if (evt.type === "error") {
+          setAnswers((prev) => ({
+            ...prev,
+            [evt.model]: {
+              answer: prev[evt.model]?.answer || "",
+              error: evt.error || "Unknown error",
+              latency_ms: prev[evt.model]?.latency_ms ?? 0,
+            },
+          }));
+          return;
+        }
+        if (evt.type === "end") {
+          const t0 = modelStart[evt.model] ?? startedAtRun;
+          setAnswers((prev) => {
+            const prevAns = prev[evt.model]?.answer || "";
+            return {
+              ...prev,
+              [evt.model]: {
+                ...prev[evt.model],
+                answer: prevAns || evt.text || "",
+                latency_ms: Date.now() - t0,
+              },
+            };
+          });
+          return;
+        }
+        if (evt.type === "all_done") {
+          setIsRunning(false);
+          setEndedAt(Date.now());
+          streamAbortRef.current = null;
+          return;
+        }
       }
+
+      // New /langgraph/* shape
+      if (isLGEvent(evt)) {
+        if (evt.scope === "multi") {
+          if (evt.type === "delta" && evt.model) {
+            const modelKey = modelForWire[evt.model] || evt.model;
+            if (!modelStart[modelKey]) modelStart[modelKey] = Date.now();
+            setAnswers((prev) => ({
+              ...prev,
+              [modelKey]: {
+                ...(prev[modelKey] || { answer: "", latency_ms: 0 }),
+                answer: (prev[modelKey]?.answer || "") + (evt.text || ""),
+              },
+            }));
+            return;
+          }
+          if (evt.type === "done" && evt.model) {
+            const modelKey = modelForWire[evt.model] || evt.model;
+            const t0 = modelStart[modelKey] ?? startedAtRun;
+            setAnswers((prev) => ({
+              ...prev,
+              [modelKey]: {
+                ...(prev[modelKey] || { answer: "" }),
+                latency_ms: Date.now() - t0,
+              },
+            }));
+            return;
+          }
+        }
+      }
+      // ignore anything else
     };
 
     try {
-      const ndjsonPayload: Record<string, unknown> = {
-        messages: [{ role: "user", content: prompt }],
-        models: selected,
-        ...(globalTemp !== undefined ? { temperature: globalTemp } : {}),
-        ...(globalMax !== undefined ? { max_tokens: globalMax } : {}),
-        ...(globalMin !== undefined ? { min_tokens: globalMin } : {}),
-        model_params: modelParams,
-      };
+      const body = buildLangGraphMultiBody({
+        prompt: promptRefLive.current.trim(),
+        selected: selectedNow,
+        providerOf: (m) => getProviderKey(m),
+        history: undefined,
+        perModelParams: modelParamsRef.current,
+      });
 
-      const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced/ndjson`, {
+      const res = await fetch(`${API_BASE}/langgraph/chat/multi/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(ndjsonPayload),
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
+        body: JSON.stringify({
+          ...body,
+          thread_id: threadId, // shared thread id so single+multi share memory
+        }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
 
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() || "";
-
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            processEvent(JSON.parse(trimmed) as unknown as StreamEvent);
-          } catch (e) {
-            console.warn("Could not parse line", trimmed, e);
-          }
-        }
-      }
-
-      buf += decoder.decode();
-      const tail = buf
-        .split("\n")
-        .map((l) => l.trim())
-        .filter(Boolean);
-      for (const t of tail) {
+      await readSSE<NDJSONEvent | LGEvent>(reader, (evt) => {
         try {
-          processEvent(JSON.parse(t) as unknown as StreamEvent);
-        } catch (e) {
-          console.warn("Could not parse tail line", t, e);
+          processEvent(evt);
+        } catch {
+          // ignore malformed
         }
-      }
+      });
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === "AbortError";
       if (!isAbort) {
+        // eslint-disable-next-line no-console
         console.error(err);
         setIsRunning(false);
         setEndedAt(Date.now());
@@ -690,214 +1132,34 @@ export default function CompareLLMClient(): JSX.Element {
       setIsRunning(false);
       streamAbortRef.current = null;
     }
-  }, [canRun, prompt, selected, modelParams, globalTemp, globalMax, globalMin, resetRun]);
+  }, [canRun, resetRun, getProviderKey, threadId]);
 
-  const runEnhancedPrompt = useCallback(async () => {
-    if (!canRun) return;
-    setIsRunning(true);
-    resetRun();
-    setLastRunPrompt(prompt.trim()); // snapshot last run prompt
-    try {
-      const perModel: Record<string, Partial<PerModelParam>> = {};
-      for (const m of selected) {
-        const p = modelParams[m] || {};
-        const trimmed = pruneUndefined({
-          temperature: p.temperature,
-          max_tokens: p.max_tokens,
-          min_tokens: p.min_tokens,
-        });
-        if (Object.keys(trimmed).length > 0) perModel[m] = trimmed;
-      }
-
-      const enhancedRequest: EnhancedChatRequest = {
-        messages: [{ role: "user", content: prompt }],
-        models: selected,
-      };
-      if (globalTemp !== undefined) enhancedRequest.temperature = globalTemp;
-      if (globalMax !== undefined) enhancedRequest.max_tokens = globalMax;
-      if (globalMin !== undefined) enhancedRequest.min_tokens = globalMin;
-      if (Object.keys(perModel).length > 0) enhancedRequest.model_params = perModel;
-
-      const anthropicModels = selected.filter((m) => getProviderWire(m) === "anthropic");
-      const openaiModels = selected.filter((m) => getProviderWire(m) === "openai");
-      const geminiModels = selected.filter((m) => getProviderWire(m) === "gemini");
-      const ollamaModels = selected.filter((m) => getProviderWire(m) === "ollama");
-
-      if (anthropicModels.length > 0) {
-        const merged = pruneUndefined(
-          anthropicModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.thinking_enabled = acc.thinking_enabled ?? p.thinking_enabled;
-            acc.thinking_budget_tokens = acc.thinking_budget_tokens ?? p.thinking_budget_tokens;
-            acc.top_k = acc.top_k ?? p.top_k;
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.stop_sequences = acc.stop_sequences ?? p.stop_sequences;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["anthropic_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.anthropic_params = merged;
-      }
-
-      if (openaiModels.length > 0) {
-        const merged = pruneUndefined(
-          openaiModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.frequency_penalty = acc.frequency_penalty ?? p.frequency_penalty;
-            acc.presence_penalty = acc.presence_penalty ?? p.presence_penalty;
-            acc.seed = acc.seed ?? p.seed;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["openai_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.openai_params = merged;
-      }
-
-      if (geminiModels.length > 0) {
-        const merged = pruneUndefined(
-          geminiModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.top_k = acc.top_k ?? p.top_k;
-            acc.top_p = acc.top_p ?? p.top_p;
-            acc.candidate_count = acc.candidate_count ?? p.candidate_count;
-            acc.safety_settings = acc.safety_settings ?? p.safety_settings;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["gemini_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.gemini_params = merged;
-      }
-
-      if (ollamaModels.length > 0) {
-        const merged = pruneUndefined(
-          ollamaModels.reduce((acc, model) => {
-            const p = modelParams[model] || {};
-            acc.mirostat = acc.mirostat ?? p.mirostat;
-            acc.mirostat_eta = acc.mirostat_eta ?? p.mirostat_eta;
-            acc.mirostat_tau = acc.mirostat_tau ?? p.mirostat_tau;
-            acc.num_ctx = acc.num_ctx ?? p.num_ctx;
-            acc.repeat_penalty = acc.repeat_penalty ?? p.repeat_penalty;
-            return acc;
-          }, {} as NonNullable<EnhancedChatRequest["ollama_params"]>)
-        );
-        if (Object.keys(merged).length > 0) enhancedRequest.ollama_params = merged;
-      }
-
-      const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(enhancedRequest),
-      });
-      if (!res.ok) {
-        const error = (await res.json().catch(() => ({ detail: res.statusText }))) as { detail?: string };
-        throw new Error(error.detail || `HTTP ${res.status}`);
-      }
-      const result = (await res.json()) as { answers?: AskAnswers };
-      const newAnswers: AskAnswers = {};
-      for (const model of selected) {
-        const modelResult = result.answers?.[model];
-        newAnswers[model] = {
-          answer: modelResult?.answer || "",
-          error: modelResult?.error,
-          latency_ms: modelResult?.latency_ms || 0,
-        };
-      }
-      setAnswers(newAnswers);
-      setEndedAt(Date.now());
-    } catch (err) {
-      console.error("Enhanced API error:", err);
-      alert(`Error: ${err instanceof Error ? err.message : "Unknown error"}`);
-    } finally {
-      setIsRunning(false);
-    }
-  }, [canRun, selected, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderWire, resetRun]);
-
-  const executePrompt = useCallback(async () => {
-    if (activeTab === "chat") {
-      await runPrompt();
-    } else {
-      await runEnhancedPrompt();
-    }
-  }, [activeTab, runPrompt, runEnhancedPrompt]);
-
-  // =============================
-  // Retry (single model) — STREAM via NDJSON
-  // =============================
+  // === Retry single model via LangGraph single-stream (SSE) ===
   const retryModel = useCallback(
     async (model: string) => {
-      const retryPrompt = (lastRunPrompt || prompt).trim();
+      const retryPrompt = (lastRunPrompt || promptRefLive.current).trim();
       if (!retryPrompt) {
         alert("No prompt to retry. Please enter a prompt first.");
         return;
       }
-
-      // Reset just this card
-      setAnswers((prev) => ({
-        ...prev,
-        [model]: { answer: "", error: undefined, latency_ms: 0 },
-      }));
-
-      // Build per-model + global params
-      const perModel = modelParams[model] || {};
-      const enhancedNdjsonPayload: Record<string, unknown> = {
-        messages: [{ role: "user", content: retryPrompt }],
-        models: [model],
-        ...(globalTemp !== undefined ? { temperature: globalTemp } : {}),
-        ...(globalMax !== undefined ? { max_tokens: globalMax } : {}),
-        ...(globalMin !== undefined ? { min_tokens: globalMin } : {}),
-        model_params: {
-          [model]: Object.fromEntries(
-            Object.entries({
-              temperature: perModel.temperature,
-              max_tokens: perModel.max_tokens,
-              min_tokens: perModel.min_tokens,
-            }).filter(([, v]) => v !== undefined)
-          ),
-        },
-      };
-
-      // provider-specific group params by wire
-      const wire = getProviderWire(model);
-      const add = <T extends object>(obj?: T) => (obj && Object.keys(obj).length ? obj : undefined);
-
-      if (wire === "anthropic") {
-        enhancedNdjsonPayload["anthropic_params"] = add({
-          thinking_enabled: perModel.thinking_enabled,
-          thinking_budget_tokens: perModel.thinking_budget_tokens,
-          top_k: perModel.top_k,
-          top_p: perModel.top_p,
-          stop_sequences: perModel.stop_sequences,
-        });
-      } else if (wire === "openai") {
-        enhancedNdjsonPayload["openai_params"] = add({
-          top_p: perModel.top_p,
-          frequency_penalty: perModel.frequency_penalty,
-          presence_penalty: perModel.presence_penalty,
-          seed: perModel.seed,
-        });
-      } else if (wire === "gemini") {
-        enhancedNdjsonPayload["gemini_params"] = add({
-          top_k: perModel.top_k,
-          top_p: perModel.top_p,
-          candidate_count: perModel.candidate_count,
-          safety_settings: perModel.safety_settings,
-        });
-      } else if (wire === "ollama") {
-        enhancedNdjsonPayload["ollama_params"] = add({
-          mirostat: perModel.mirostat,
-          mirostat_eta: perModel.mirostat_eta,
-          mirostat_tau: perModel.mirostat_tau,
-          num_ctx: perModel.num_ctx,
-          repeat_penalty: perModel.repeat_penalty,
-        });
-      }
-
+      setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: undefined, latency_ms: 0 } }));
       const controller = new AbortController();
       const started = Date.now();
 
       try {
-        const res = await fetch(`${API_BASE}/v2/chat/completions/enhanced/ndjson`, {
+        const wire = toWire(getProviderKey(model), model);
+        const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(enhancedNdjsonPayload),
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
+          body: JSON.stringify({
+            wire,
+            messages: [{ role: "user", content: retryPrompt }],
+            model_params: modelParamsRef.current[model] || {},
+            thread_id: threadId, // shared thread id
+          }),
           signal: controller.signal,
         });
 
@@ -907,94 +1169,31 @@ export default function CompareLLMClient(): JSX.Element {
         }
 
         const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-
-            // StreamEvent shape from your runPrompt path
-            // { type: "chunk", model: string, answer?: string, error?: string, latency_ms: number }
-            // { type: "done" }
-            try {
-              const evt = JSON.parse(trimmed) as {
-                type: "chunk" | "done";
-                model?: string;
-                answer?: string;
-                error?: string;
-                latency_ms?: number;
-              };
-
-              if (evt.type === "chunk" && (!evt.model || evt.model === model)) {
-                setAnswers((prev) => ({
-                  ...prev,
-                  [model]: {
-                    answer: (prev[model]?.answer || "") + (evt.answer || ""),
-                    error: evt.error,
-                    latency_ms: evt.latency_ms ?? (Date.now() - started),
-                  },
-                }));
-              }
-              // ignore 'done' here; we'll set final latency below
-            } catch {
-              // ignore malformed lines
-            }
+        await readSSE<LGEvent>(reader, (evt) => {
+          if (evt.scope === "single" && evt.type === "delta") {
+            const piece = evt.delta || "";
+            setAnswers((prev) => ({
+              ...prev,
+              [model]: {
+                answer: (prev[model]?.answer || "") + piece,
+                error: prev[model]?.error,
+                latency_ms: prev[model]?.latency_ms ?? 0,
+              },
+            }));
+          } else if (evt.scope === "single" && evt.type === "done") {
+            setAnswers((prev) => ({
+              ...prev,
+              [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
+            }));
           }
-        }
-
-        // Flush tail
-        if (buf.trim()) {
-          try {
-            const tailEvt = JSON.parse(buf.trim()) as {
-              type: "chunk" | "done";
-              model?: string;
-              answer?: string;
-              error?: string;
-              latency_ms?: number;
-            };
-            if (tailEvt.type === "chunk" && (!tailEvt.model || tailEvt.model === model)) {
-              setAnswers((prev) => ({
-                ...prev,
-                [model]: {
-                  answer: (prev[model]?.answer || "") + (tailEvt.answer || ""),
-                  error: tailEvt.error,
-                  latency_ms: tailEvt.latency_ms ?? (Date.now() - started),
-                },
-              }));
-            }
-          } catch {
-            /* noop */
-          }
-        }
-
-        // finalize latency
-        setAnswers((prev) => ({
-          ...prev,
-          [model]: {
-            ...prev[model],
-            latency_ms: Date.now() - started,
-          },
-        }));
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Unknown error";
-        setAnswers((prev) => ({
-          ...prev,
-          [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 },
-        }));
+        setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 } }));
       }
     },
-    [API_BASE, lastRunPrompt, prompt, modelParams, globalTemp, globalMax, globalMin, getProviderWire]
+    [lastRunPrompt, getProviderKey, threadId]
   );
-
 
   const repromptFromResults = useCallback(() => {
     if (!lastRunPrompt) return;
@@ -1010,25 +1209,28 @@ export default function CompareLLMClient(): JSX.Element {
     const onKey = (evt: KeyboardEvent) => {
       if ((evt.metaKey || evt.ctrlKey) && evt.shiftKey && evt.key === "Enter") {
         evt.preventDefault();
-        if (activeTab === "embedding" && compareQuery.trim() && selectedEmbeddingModels.length > 0 && datasets.length > 0) {
+        if (
+          activeTab === "embedding" &&
+          compareQuery.trim() &&
+          selectedEmbeddingModels.length > 0 &&
+          datasets.length > 0 &&
+          selectedCompareDataset
+        ) {
           void performMultiSearch();
           return;
         }
       }
-
       if ((evt.metaKey || evt.ctrlKey) && evt.key === "Enter") {
         evt.preventDefault();
         if (activeModel && interactivePrompt.trim()) {
           void sendInteractiveMessage();
         } else if (activeTab === "chat" && canRun) {
-          void (useEnhancedAPI ? runEnhancedPrompt() : runPrompt());
+          void runPrompt();
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
         }
       }
-      if (evt.key === "Escape" && activeModel) {
-        closeModelChat();
-      }
+      if (evt.key === "Escape" && activeModel) closeModelChat();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1041,11 +1243,12 @@ export default function CompareLLMClient(): JSX.Element {
     interactivePrompt,
     canRun,
     runPrompt,
-    runEnhancedPrompt,
     performSearch,
     performMultiSearch,
     sendInteractiveMessage,
     closeModelChat,
+    compareQuery,
+    selectedCompareDataset,
   ]);
 
   // ==== RENDER ====
@@ -1061,9 +1264,7 @@ export default function CompareLLMClient(): JSX.Element {
           onClose={closeModelChat}
           prompt={interactivePrompt}
           setPrompt={setInteractivePrompt}
-          onSend={() => {
-            void sendInteractiveMessage();
-          }}
+          onSend={() => void sendInteractiveMessage()}
         />
       )}
 
@@ -1111,13 +1312,13 @@ export default function CompareLLMClient(): JSX.Element {
                 <label className="text-sm font-medium">Models</label>
                 <div className="flex gap-2 text-xs">
                   <button
-                    onClick={selectAll}
+                    onClick={() => setSelected(allModels)}
                     className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
                   >
                     Select all
                   </button>
                   <button
-                    onClick={clearAll}
+                    onClick={() => setSelected([])}
                     className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
                   >
                     Clear
@@ -1125,11 +1326,11 @@ export default function CompareLLMClient(): JSX.Element {
                 </div>
               </div>
 
-              {/* Resizable ModelList (uses your updated component with drag handle) */}
+              {/* Resizable ModelList */}
               <ModelList
                 models={allModels}
                 selected={selected}
-                onToggle={toggleModel}
+                onToggle={(m) => setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
                 brandOf={getProviderType}
                 initialHeightPx={260}
                 minHeightPx={140}
@@ -1168,37 +1369,37 @@ export default function CompareLLMClient(): JSX.Element {
                     type="number"
                     min={1}
                     value={globalMin ?? ""}
-                    placeholder="Model default"
+                    placeholder="optional"
                     onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
                     className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
                   />
                 </div>
               </div>
 
-              {/* DYNAMIC: Per-model parameters render ONLY for selected models */}
+              {/* Per-model parameters */}
               <div className="space-y-2">
                 <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
-
                 {selected.length === 0 && (
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400">
-                    Select one or more models above to configure their parameters.
-                  </div>
+                  <div className="text-sm text-zinc-500 dark:text-zinc-400">Select one or more models above to configure their parameters.</div>
                 )}
-
                 {selected.map((m) => {
                   const brand = getProviderType(m);
-                  const wire = getProviderWire(m);
+                  const provKey = getProviderKey(m);
+                  const wire: ProviderWire = uiWireForProviderKey(provKey);
                   const isExpanded = expandedModels.has(m);
                   const hasParams = modelParams[m] && Object.keys(modelParams[m]).length > 0;
 
                   return (
-                    <div
-                      key={m}
-                      className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5"
-                    >
+                    <div key={m} className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5">
                       <div
                         className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
-                        onClick={() => toggleModelExpansion(m)}
+                        onClick={() =>
+                          setExpandedModels((prev) => {
+                            const next = new Set(prev);
+                            next.has(m) ? next.delete(m) : next.add(m);
+                            return next;
+                          })
+                        }
                         title={`Configure ${m}`}
                       >
                         <div className="flex items-center gap-2 min-w-0">
@@ -1211,12 +1412,7 @@ export default function CompareLLMClient(): JSX.Element {
                         </div>
                         <div className="flex items-center gap-2">
                           <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_BADGE_BG[brand]}`}>{brand}</span>
-                          <svg
-                            className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`}
-                            fill="none"
-                            stroke="currentColor"
-                            viewBox="0 0 24 24"
-                          >
+                          <svg className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                           </svg>
                         </div>
@@ -1233,14 +1429,11 @@ export default function CompareLLMClient(): JSX.Element {
                                 min={0}
                                 max={2}
                                 value={modelParams[m]?.temperature ?? ""}
-                                placeholder="↳ global / backend default"
+                                placeholder="↳ global / default"
                                 onChange={(e) =>
                                   setModelParams((prev) => ({
                                     ...prev,
-                                    [m]: {
-                                      ...prev[m],
-                                      temperature: e.target.value ? Number(e.target.value) : undefined,
-                                    },
+                                    [m]: { ...prev[m], temperature: e.target.value ? Number(e.target.value) : undefined },
                                   }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
@@ -1256,10 +1449,7 @@ export default function CompareLLMClient(): JSX.Element {
                                 onChange={(e) =>
                                   setModelParams((prev) => ({
                                     ...prev,
-                                    [m]: {
-                                      ...prev[m],
-                                      max_tokens: e.target.value ? Number(e.target.value) : undefined,
-                                    },
+                                    [m]: { ...prev[m], max_tokens: e.target.value ? Number(e.target.value) : undefined },
                                   }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
@@ -1275,10 +1465,7 @@ export default function CompareLLMClient(): JSX.Element {
                                 onChange={(e) =>
                                   setModelParams((prev) => ({
                                     ...prev,
-                                    [m]: {
-                                      ...prev[m],
-                                      min_tokens: e.target.value ? Number(e.target.value) : undefined,
-                                    },
+                                    [m]: { ...prev[m], min_tokens: e.target.value ? Number(e.target.value) : undefined },
                                   }))
                                 }
                                 className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
@@ -1290,23 +1477,13 @@ export default function CompareLLMClient(): JSX.Element {
                             model={m}
                             providerWire={wire}
                             params={modelParams[m] || {}}
-                            onUpdate={(params) =>
-                              setModelParams((prev) => ({
-                                ...prev,
-                                [m]: params,
-                              }))
-                            }
+                            onUpdate={(params) => setModelParams((prev) => ({ ...prev, [m]: params }))}
                           />
 
                           {hasParams && (
                             <div className="mt-3 pt-3 border-t border-orange-200 dark:border-orange-700">
                               <button
-                                onClick={() =>
-                                  setModelParams((prev) => ({
-                                    ...prev,
-                                    [m]: {},
-                                  }))
-                                }
+                                onClick={() => setModelParams((prev) => ({ ...prev, [m]: {} }))}
                                 className="text-xs px-2 py-1 rounded-md border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
                               >
                                 Clear all parameters
@@ -1321,9 +1498,7 @@ export default function CompareLLMClient(): JSX.Element {
               </div>
 
               <button
-                onClick={() => {
-                  void executePrompt();
-                }}
+                onClick={() => void runPrompt()}
                 disabled={!canRun}
                 className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
               >
@@ -1387,6 +1562,9 @@ export default function CompareLLMClient(): JSX.Element {
             performMultiSearch={performMultiSearch}
             isComparing={isComparing}
             deleteDataset={deleteDataset}
+            // NEW: dedicated compare dataset selector
+            selectedCompareDataset={selectedCompareDataset}
+            setSelectedCompareDataset={setSelectedCompareDataset}
           />
 
           {/* Right rail */}
