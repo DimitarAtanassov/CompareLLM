@@ -226,7 +226,9 @@ async def chat_multi_stream(req: Request):
     registry = getattr(req.app.state, "registry", None)
     if registry is None:
         raise HTTPException(500, "Model registry is not initialized")
+
     graph, _ = build_multi_model_graph(registry, targets, per_model_params=per_model_params)
+    node_to_wire = getattr(graph, "_node_to_wire", {}) or {}
 
     async def gen():
         # OPEN
@@ -248,8 +250,12 @@ async def chat_multi_stream(req: Request):
             et = ev.get("event")
             data = ev.get("data") or {}
             meta = ev.get("metadata") or {}
-            wire = (meta.get("wire") or meta.get("model") or "")
             node = meta.get("langgraph_node")
+
+            # Try to get a proper wire id for the frontend
+            wire = (meta.get("wire") or meta.get("model") or "")  # often empty
+            if not wire and node and node in node_to_wire:
+                wire = node_to_wire[node]
 
             if et == "on_chat_model_stream":
                 chunk = data.get("chunk")
@@ -259,7 +265,7 @@ async def chat_multi_stream(req: Request):
                     yield _sse_event({
                         "type": "delta",
                         "scope": "multi",
-                        "model": wire,
+                        "model": wire,   # <-- required by the frontend
                         "node": node,
                         "text": piece,
                         "done": False
@@ -297,3 +303,4 @@ async def chat_multi_stream(req: Request):
             yield _sse_event({"type": "done", "scope": "multi", "model": w, "done": True}, event="done")
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
+

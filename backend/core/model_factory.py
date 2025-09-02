@@ -1,4 +1,3 @@
-# app/core/model_factory.py
 from __future__ import annotations
 import os
 from typing import Any, Dict, Tuple
@@ -10,66 +9,62 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_cohere import ChatCohere
 from langchain_cerebras import ChatCerebras
-# Optional native DeepSeek; if you prefer OpenAI-wire, omit this
+
 try:
     from langchain_deepseek import ChatDeepSeek  # type: ignore
 except Exception:
     ChatDeepSeek = None  # pragma: no cover
 
+
 def _env_val(name: str | None) -> str | None:
     return os.getenv(name) if name else None
 
+
 def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name: str) -> Any:
     """
-    Given a provider config & model name, return an initialized LangChain ChatModel.
+    Base model for inventory / pooling (no per-request params).
     """
-    ptype = provider_cfg.get("type")          # e.g. openai, anthropic, gemini, ollama, cohere, deepseek, cerebras
-    wire  = provider_cfg.get("wire")          # e.g. "openai" for OpenAI-compatible providers
+    ptype = provider_cfg.get("type")
+    wire  = provider_cfg.get("wire")
     base_url = provider_cfg.get("base_url")
     headers  = provider_cfg.get("headers") or {}
     api_key  = _env_val(provider_cfg.get("api_key_env"))
 
     if ptype == "openai":
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
-
     elif ptype == "anthropic":
         return ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers)
-
     elif ptype == "gemini":
         return ChatGoogleGenerativeAI(model=model_name, api_key=api_key)
-
     elif ptype == "ollama":
         return ChatOllama(model=model_name, base_url=base_url)
-
     elif ptype == "cohere":
         return ChatCohere(model=model_name, api_key=api_key)
-
     elif ptype == "deepseek" and ChatDeepSeek is not None:
         return ChatDeepSeek(model=model_name, api_key=api_key)
-
     elif ptype == "cerebras":
-        # Cerebras LC wrapper supports OpenAI-ish params
         return ChatCerebras(model=model_name, api_key=api_key, base_url=base_url)
-
-    # OpenAI-wire compatible fallback (e.g., deepseek/cerebras exposed via openai wire)
     elif wire == "openai":
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
 
     raise ValueError(f"Unsupported provider or wire for '{provider_key}' (type={ptype}, wire={wire})")
 
+
 # ---------- parameter normalization ----------
 def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | None) -> Dict[str, Any]:
     """
-    Map your unified UI params -> provider-specific kwargs for LangChain chat models.
-    Supported unified keys: temperature, max_tokens, top_p, top_k, frequency_penalty, presence_penalty, stop
+    Map unified UI params -> provider-specific kwargs for LangChain chat models.
+
+    Supported unified keys: temperature, max_tokens, top_p, top_k,
+    frequency_penalty, presence_penalty, stop, timeout, max_retries
     """
     if not params:
         return {}
     pt = (provider_type or "").lower()
     out: Dict[str, Any] = {}
 
-    # temperature (common)
-    if "temperature" in params and params["temperature"] is not None:
+    # temperature
+    if params.get("temperature") is not None:
         out["temperature"] = params["temperature"]
 
     # max tokens
@@ -80,51 +75,167 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
         elif pt == "ollama":
             out["num_predict"] = mt
         else:
-            out["max_tokens"] = mt  # openai/anthropic/cohere/deepseek/cerebras
+            out["max_tokens"] = mt  # openai / anthropic / cohere / deepseek / cerebras
 
     # top_p
-    if "top_p" in params and params["top_p"] is not None:
+    if params.get("top_p") is not None:
         if pt == "cohere":
-            out["p"] = params["top_p"]
+            out["p"] = params["top_p"]    # Cohere uses 'p'
         else:
             out["top_p"] = params["top_p"]
 
-    # top_k (gemini/cohere/ollama)
-    if "top_k" in params and params["top_k"] is not None:
-        if pt in ("gemini", "cohere", "ollama"):
+    # top_k
+    if params.get("top_k") is not None:
+        if pt == "cohere":
+            out["k"] = params["top_k"]    # Cohere uses 'k'
+        elif pt in ("gemini", "ollama"):
             out["top_k"] = params["top_k"]
 
     # penalties (OpenAI-ish stacks)
     for k in ("frequency_penalty", "presence_penalty"):
-        if k in params and params[k] is not None and pt in ("openai", "deepseek", "cerebras"):
+        if params.get(k) is not None and pt in ("openai", "deepseek", "cerebras"):
             out[k] = params[k]
 
-    # stop sequences (most wrappers accept)
-    if "stop" in params and params["stop"]:
+    # stop sequences
+    if params.get("stop"):
         out["stop"] = params["stop"]
 
-    # timeouts/retries (LC common kwargs)
+    # timeouts / retries (LC common kwargs)
     for k in ("timeout", "max_retries"):
-        if k in params and params[k] is not None:
+        if params.get(k) is not None:
             out[k] = params[k]
 
     return out
 
+
 def parse_wire(wire: str) -> Tuple[str, str]:
-    """
-    Expect 'provider_key:model_name'. If missing, raise for clarity.
-    """
     if ":" not in wire:
         raise ValueError(f"Wire must be 'provider:model', got '{wire}'")
     pkey, model = wire.split(":", 1)
     return pkey, model
 
+
+# ---------- build with params at initialization ----------
+def build_chat_model_with_params(
+    provider_key: str,
+    provider_cfg: Dict[str, Any],
+    model_name: str,
+    gen_params: Dict[str, Any] | None = None,
+) -> Any:
+    """
+    Construct a *new* LC chat model instance with generation params applied
+    at initialization (preferred over .bind()).
+    """
+    ptype = provider_cfg.get("type")
+    wire  = provider_cfg.get("wire")
+    base_url = provider_cfg.get("base_url")
+    headers  = provider_cfg.get("headers") or {}
+    api_key  = _env_val(provider_cfg.get("api_key_env"))
+
+    norm = normalize_chat_params(ptype, gen_params or {})
+    ctor_kwargs: Dict[str, Any] = dict(model=model_name)
+
+    if ptype in ("openai", "cerebras") or (wire == "openai"):
+        if base_url:
+            ctor_kwargs["base_url"] = base_url
+        if headers:
+            ctor_kwargs["default_headers"] = headers
+        if ptype in ("openai",) or wire == "openai":
+            ctor_kwargs["api_key"] = api_key
+            cls = ChatOpenAI
+        elif ptype == "cerebras":
+            ctor_kwargs["api_key"] = api_key
+            cls = ChatCerebras
+        ctor_kwargs.update(norm)
+        model_obj = cls(**ctor_kwargs)
+
+    elif ptype == "anthropic":
+        model_obj = ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers, **norm)
+
+    elif ptype == "gemini":
+        model_obj = ChatGoogleGenerativeAI(model=model_name, api_key=api_key, **norm)
+
+    elif ptype == "cohere":
+        model_obj = ChatCohere(model=model_name, api_key=api_key, **norm)
+
+    elif ptype == "ollama":
+        model_obj = ChatOllama(model=model_name, base_url=base_url, **norm)
+
+    elif ptype == "deepseek" and ChatDeepSeek is not None:
+        model_obj = ChatDeepSeek(model=model_name, api_key=api_key, **norm)
+
+    else:
+        raise ValueError(f"Unsupported provider or wire for '{provider_key}' (type={ptype}, wire={wire})")
+
+    # Safety: bind any leftover params if ctor didn't consume them (older LC versions)
+    leftover = {}
+    try:
+        defaults = getattr(model_obj, "_default_params", None) or {}
+        for k, v in (norm or {}).items():
+            if k not in defaults:
+                leftover[k] = v
+    except Exception:
+        for k, v in (norm or {}).items():
+            leftover[k] = v
+
+    if leftover:
+        model_obj = model_obj.bind(**leftover)
+
+    return model_obj
+
+
 def resolve_and_bind_from_registry(registry, wire: str, params: Dict[str, Any] | None):
     """
-    Fetch a prebuilt model from the registry and bind normalized generation kwargs.
+    (Legacy) Fetch pooled base model & bind params. Kept for backwards compat.
     """
     pkey, model_name = parse_wire(wire)
     base = registry.get(pkey, model_name)
-    ptype = registry.provider_type(pkey)
+    ptype = None
+    try:
+        ptype = registry.provider_type(pkey)
+    except Exception:
+        pass
     bound_kwargs = normalize_chat_params(ptype, params or {})
     return base.bind(**bound_kwargs)
+
+
+# ---------- NEW: resolve + *init* (preferred path) ----------
+def resolve_and_init_from_registry(registry, wire: str, params: Dict[str, Any] | None):
+    """
+    Build a brand-new model instance using the provider config in the registry
+    and applying normalized generation params at constructor time.
+
+    Compatible with:
+      - core.model_registry.ModelRegistry (provider_cfg / get_providers_cfg)
+      - providers.registry.ModelRegistry (providers_config()).
+    """
+    pkey, model_name = parse_wire(wire)
+
+    pcfg: Dict[str, Any] | None = None
+
+    # Preferred: direct single-provider accessor
+    if hasattr(registry, "provider_cfg"):
+        try:
+            pcfg = registry.provider_cfg(pkey)
+        except Exception:
+            pcfg = None
+
+    # Fallbacks: whole providers dict accessors
+    if not pcfg:
+        if hasattr(registry, "get_providers_cfg"):
+            try:
+                all_cfg = registry.get_providers_cfg()
+                pcfg = (all_cfg or {}).get(pkey)
+            except Exception:
+                pcfg = None
+        elif hasattr(registry, "providers_config"):
+            try:
+                all_cfg = registry.providers_config()
+                pcfg = (all_cfg or {}).get(pkey)
+            except Exception:
+                pcfg = None
+
+    if not pcfg:
+        raise ValueError(f"No provider config found for '{pkey}'")
+
+    return build_chat_model_with_params(pkey, pcfg, model_name, params or {})

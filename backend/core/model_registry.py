@@ -1,11 +1,10 @@
-# core/model_registry.py
 from __future__ import annotations
 from typing import Dict, Iterable, Any
 
 class ModelRegistry:
     def __init__(self) -> None:
         self._models: Dict[str, Any] = {}
-        # NEW: stash providers config so we can answer provider_type()
+        # Stash providers config so we can answer provider_type() and expose cfg to callers
         self._providers_cfg: Dict[str, Dict[str, Any]] = {}
         print("[ModelRegistry] Initialized empty registry")
 
@@ -48,7 +47,7 @@ class ModelRegistry:
         print(f"[ModelRegistry] __contains__({key}) -> {contains}")
         return contains
 
-    # ---- NEW: provider metadata helpers ----
+    # ---- Provider metadata helpers ----
     def set_providers_cfg(self, providers_cfg: Dict[str, Dict[str, Any]]) -> None:
         """Store the providers section from models.yaml so we can answer provider_type()."""
         self._providers_cfg = providers_cfg or {}
@@ -61,3 +60,12 @@ class ModelRegistry:
         """Return the 'type' for a provider (e.g., 'openai', 'anthropic', 'gemini', ...)."""
         cfg = self._providers_cfg.get(provider_key) or {}
         return cfg.get("type")
+
+    # ---- Compatibility accessors (so older/newer call sites work) ----
+    def get_providers_cfg(self) -> Dict[str, Dict[str, Any]]:
+        """Compatibility alias used by some callers."""
+        return self._providers_cfg
+
+    def providers_config(self) -> Dict[str, Dict[str, Any]]:
+        """Alias matching providers.registry.ModelRegistry API."""
+        return self._providers_cfg

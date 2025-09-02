@@ -1,4 +1,3 @@
-# app/graphs/factory.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -7,7 +6,8 @@ from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
 from .state import SingleState, MultiState
-from core.model_factory import resolve_and_bind_from_registry
+from core.model_factory import resolve_and_init_from_registry
+
 
 # =========================
 # Utilities
@@ -30,20 +30,55 @@ def _lc_messages(msgs: List[Any]) -> List[BaseMessage]:
             out.append(AIMessage(content=c))
     return out
 
-def _chunk_text(chunk) -> str:
+
+def _extract_piece(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if isinstance(part, dict):
+        t = part.get("text")
+        if isinstance(t, str):
+            return t
+        if part.get("type") == "text" and isinstance(part.get("text"), str):
+            return part["text"]
+    return ""
+
+
+def _chunk_text(chunk: Any) -> str:
+    # 1) direct string content
     c = getattr(chunk, "content", None)
-    if isinstance(c, str):
+    if isinstance(c, str) and c:
         return c
-    out = []
-    if isinstance(c, list):
-        for p in c:
-            t = getattr(p, "text", None)
-            if isinstance(t, str):
-                out.append(t)
+    # 2) direct .text
     t = getattr(chunk, "text", None)
-    if isinstance(t, str):
-        out.append(t)
-    return "".join(out)
+    if isinstance(t, str) and t:
+        return t
+    # 3) list content
+    if isinstance(c, list):
+        parts: List[str] = []
+        for p in c:
+            s = _extract_piece(p)
+            if s:
+                parts.append(s)
+        if parts:
+            return "".join(parts)
+    # 4) delta shapes
+    d = getattr(chunk, "delta", None)
+    if isinstance(d, str):
+        return d
+    if isinstance(d, list):
+        joined = "".join(_extract_piece(p) for p in d)
+        if joined:
+            return joined
+    if isinstance(d, dict):
+        s = d.get("content") or d.get("text")
+        if isinstance(s, str):
+            return s
+        if isinstance(s, list):
+            joined = "".join(_extract_piece(p) for p in s)
+            if joined:
+                return joined
+    return ""
+
 
 # =========================
 # SINGLE-MODEL GRAPH (streaming)
@@ -54,19 +89,24 @@ def build_single_model_graph(
     model_kwargs: Optional[Dict[str, Any]] = None,
     memory_backend: Optional[Any] = None,
 ):
-    """
-    Build a single-model graph that streams assistant deltas via node yields.
-    """
     model_kwargs = model_kwargs or {}
-    llm = resolve_and_bind_from_registry(registry, wire, model_kwargs).with_config({"metadata": {"wire": wire}})
+    # ⬇️ previously resolve_and_bind_from_registry(...)
+    llm = resolve_and_init_from_registry(registry, wire, model_kwargs)
 
     g = StateGraph(SingleState)
 
     async def chatbot(state: SingleState):
+        got_any = False
         async for chunk in llm.astream(_lc_messages(state["messages"])):
             piece = _chunk_text(chunk)
             if piece:
+                got_any = True
                 yield {"messages": [{"role": "assistant", "content": piece}]}
+        if not got_any:
+            resp = await llm.ainvoke(_lc_messages(state["messages"]))
+            txt = getattr(resp, "content", None) or getattr(resp, "text", None) or ""
+            if txt:
+                yield {"messages": [{"role": "assistant", "content": txt}]}
 
     g.add_node("chatbot", chatbot)
     g.add_edge(START, "chatbot")
@@ -75,6 +115,7 @@ def build_single_model_graph(
     checkpointer = memory_backend or InMemorySaver()
     compiled = g.compile(checkpointer=checkpointer)
     return compiled, checkpointer
+
 
 # =========================
 # MULTI-MODEL COMPARE GRAPH (streaming deltas)
@@ -92,7 +133,9 @@ def build_multi_model_graph(
         import re
         return f"m_{idx}_{re.sub(r'[^a-zA-Z0-9_]', '_', w)}"
 
+    # Map wires <-> node names
     wire_to_node = {w: _safe_node_name(w, i) for i, w in enumerate(wires)}
+    node_to_wire = {node: wire for wire, node in wire_to_node.items()}
 
     def _make_model_node(wire: str):
         async def run_model(state: MultiState):
@@ -100,7 +143,7 @@ def build_multi_model_graph(
                 return
             params = per_model_params.get(wire, {})
             try:
-                llm = resolve_and_bind_from_registry(registry, wire, params).with_config({"metadata": {"wire": wire}})
+                llm = resolve_and_init_from_registry(registry, wire, params)
 
                 sofar = ""
                 got_any = False
@@ -128,10 +171,12 @@ def build_multi_model_graph(
 
     def router(state: MultiState):
         return {}
+
     g.add_node("router", router)
 
     def route_to_targets(state: MultiState):
         return [wire_to_node[w] for w in state["targets"] if w in wire_to_node]
+
     g.add_conditional_edges("router", route_to_targets)
 
     for node_name in wire_to_node.values():
@@ -140,4 +185,9 @@ def build_multi_model_graph(
     g.add_edge(START, "router")
 
     checkpointer = memory_backend or InMemorySaver()
-    return g.compile(checkpointer=checkpointer), checkpointer
+    compiled = g.compile(checkpointer=checkpointer)
+
+    # <-- expose node->wire so the router can recover the model id on SSE events
+    setattr(compiled, "_node_to_wire", node_to_wire)
+
+    return compiled, checkpointer
