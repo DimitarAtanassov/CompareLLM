@@ -23,4 +23,3 @@ class MultiState(TypedDict):
     targets: List[str]
     results: Annotated[Dict[str, str], merge_str_dict]  # <- reducer
     errors: Annotated[Dict[str, str], merge_str_dict]   # <- reducer
-    per_model_params: Dict[str, dict]

@@ -68,7 +68,6 @@ type LGEvent =
 
 type Selection = { provider: string; model: string };
 type ChatMsg = { role: string; content: string };
-type WithDatasetId = SearchResult & { _dataset_id?: string };
 
 // Safe helpers for runtime narrowing
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -79,32 +78,110 @@ const isNDJSONEvent = (e: unknown): e is NDJSONEvent => {
   if (!isRecord(e) || typeof e.type !== "string") return false;
   if (e.type === "all_done") return true;
   return (
-    typeof e.provider === "string" &&
-    typeof e.model === "string" &&
-    (e.type === "start" ||
-      e.type === "delta" ||
-      e.type === "end" ||
-      e.type === "error")
+    typeof (e as { provider?: unknown }).provider === "string" &&
+    typeof (e as { model?: unknown }).model === "string" &&
+    (e.type === "start" || e.type === "delta" || e.type === "end" || e.type === "error")
   );
 };
 
 // /langgraph/* events
 const isLGEvent = (e: unknown): e is LGEvent => {
-  if (!isRecord(e) || typeof e.type !== "string" || typeof e.scope !== "string") return false;
+  if (!isRecord(e) || typeof e.type !== "string" || typeof (e as { scope?: unknown }).scope !== "string") return false;
 
-  if (e.scope === "multi") {
+  const scope = (e as { scope: string }).scope;
+  if (scope === "multi") {
     if (e.type === "delta") {
-      return typeof e.model === "string" && typeof e.text === "string";
+      return typeof (e as { model?: unknown }).model === "string" && typeof (e as { text?: unknown }).text === "string";
     }
     if (e.type === "done") return true;
   }
-  if (e.scope === "single") {
-    if (e.type === "delta") return typeof e.delta === "string";
+  if (scope === "single") {
+    if (e.type === "delta") return typeof (e as { delta?: unknown }).delta === "string";
     if (e.type === "done") return true;
   }
   return false;
 };
 
+// --- Minimal SSE parser: collects "data:" lines until a blank line, then yields JSON payloads
+async function readSSE<T>(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  onEvent: (obj: T) => void
+): Promise<void> {
+  const decoder = new TextDecoder();
+  let buf = "";
+  let dataBuf = ""; // accumulates data: lines for the current SSE event
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+
+    for (const raw of lines) {
+      const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+      if (line === "") {
+        // blank line = end of one SSE event
+        const payload = dataBuf.trim();
+        if (payload) {
+          try {
+            const obj = JSON.parse(payload) as T;
+            onEvent(obj);
+          } catch {
+            // ignore malformed JSON
+          }
+        }
+        dataBuf = "";
+        continue;
+      }
+
+      if (line.startsWith(":")) {
+        // comment/heartbeat
+        continue;
+      }
+      if (line.startsWith("event:")) {
+        // event name unused — the data payload includes "type"
+        continue;
+      }
+      if (line.startsWith("data:")) {
+        // Accumulate multiple data lines for multi-line JSON payloads
+        const part = line.slice(5).trimStart();
+        dataBuf += part;
+        continue;
+      }
+
+      // Fallback: raw JSON without SSE prefix
+      if (line.startsWith("{") || line.startsWith("[")) {
+        try {
+          const obj = JSON.parse(line) as T;
+          onEvent(obj);
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  // Flush any trailing JSON that might still be in the buffer
+  const tail = buf.trim();
+  if (tail.startsWith("data:")) {
+    try {
+      const obj = JSON.parse(tail.slice(5).trim()) as T;
+      onEvent(obj);
+    } catch {
+      // ignore
+    }
+  } else if (tail.startsWith("{") || tail.startsWith("[")) {
+    try {
+      const obj = JSON.parse(tail) as T;
+      onEvent(obj);
+    } catch {
+      // ignore
+    }
+  }
+}
 
 // --- Group param shapes (same as backend expects) ---
 interface AnthropicGroupParams {
@@ -173,7 +250,7 @@ interface ChatRequestBody {
 }
 
 // === Helper: model -> backend provider key (registry YAML `type`) ===
-function buildModelToProviderKeyMap(providers: ProviderInfo[]) {
+function buildModelToProviderKeyMap(providers: ProviderInfo[]): Record<string, string> {
   const map: Record<string, string> = {};
   for (const p of providers) {
     const key = (p.type || "").toLowerCase().trim();
@@ -305,7 +382,8 @@ function buildChatRequestBody(opts: {
   if (min_tokens !== undefined) body.min_tokens = min_tokens;
   if (Object.keys(modelParams).length) body.model_params = modelParams;
 
-  const has = (o: object) => Object.values(o).some((v) => v !== undefined);
+  const has = <T extends object>(o: T): boolean =>
+    Object.values(o as Record<string, unknown>).some((v) => v !== undefined);
   if (has(anthropic_params)) body.anthropic_params = anthropic_params;
   if (has(openai_params)) body.openai_params = openai_params;
   if (has(gemini_params)) body.gemini_params = gemini_params;
@@ -317,7 +395,7 @@ function buildChatRequestBody(opts: {
 }
 
 // === LangGraph helpers ===
-function toWire(providerKey: string, model: string) {
+function toWire(providerKey: string, model: string): string {
   return `${providerKey}:${model}`;
 }
 
@@ -327,10 +405,10 @@ function buildLangGraphMultiBody(opts: {
   providerOf: (m: string) => string;
   history?: { role: string; content: string }[];
   perModelParams: Record<string, Record<string, unknown>>;
-}) {
+}): { targets: string[]; messages: ChatMsg[]; per_model_params: Record<string, Record<string, unknown>> } {
   const { prompt, selected, providerOf, history, perModelParams } = opts;
   const targets = selected.map((m) => toWire(providerOf(m), m));
-  const messages = [...(history || []), { role: "user", content: prompt }];
+  const messages: ChatMsg[] = [...(history || []), { role: "user", content: prompt }];
   const per_model_params: Record<string, Record<string, unknown>> = {};
   for (const m of selected) {
     const wire = toWire(providerOf(m), m);
@@ -447,20 +525,20 @@ export default function CompareLLMClient(): JSX.Element {
       return null;
     };
 
-    const load = async () => {
+    const load = async (): Promise<void> => {
       setLoadingProviders(true);
       try {
         // Providers
         const res = await fetch(`${API_BASE}/providers`, { cache: "no-store" });
         if (!res.ok) throw new Error(`Failed to load providers: ${res.status} ${res.statusText}`);
-        const raw = await res.json();
+        const raw = (await res.json()) as unknown;
 
         const provsUnknown: unknown = Array.isArray(raw)
           ? raw
-          : Array.isArray(raw?.providers)
-          ? raw.providers
-          : raw?.providers && typeof raw.providers === "object"
-          ? Object.values(raw.providers as Record<string, unknown>)
+          : Array.isArray((raw as { providers?: unknown })?.providers)
+          ? (raw as { providers: unknown[] }).providers
+          : (raw as { providers?: unknown })?.providers && typeof (raw as { providers?: unknown })?.providers === "object"
+          ? Object.values((raw as { providers: Record<string, unknown> }).providers)
           : [];
 
         const arr = Array.isArray(provsUnknown) ? provsUnknown : [];
@@ -474,26 +552,26 @@ export default function CompareLLMClient(): JSX.Element {
 
           const rawModels = Array.isArray(p.models)
             ? p.models
-            : Array.isArray(p.chat_models)
-            ? p.chat_models
-            : Array.isArray(p.llm_models)
-            ? p.llm_models
+            : Array.isArray((p as { chat_models?: unknown[] }).chat_models)
+            ? (p as { chat_models: unknown[] }).chat_models
+            : Array.isArray((p as { llm_models?: unknown[] }).llm_models)
+            ? (p as { llm_models: unknown[] }).llm_models
             : [];
           const models = rawModels.map(pickModelName).filter((m): m is string => !!m);
 
           const rawEmb = Array.isArray(p.embedding_models)
             ? p.embedding_models
-            : Array.isArray(p.embed_models)
-            ? p.embed_models
+            : Array.isArray((p as { embed_models?: unknown[] }).embed_models)
+            ? (p as { embed_models: unknown[] }).embed_models
             : [];
           const embedding_models = rawEmb.map(pickModelName).filter((m): m is string => !!m);
 
           const auth_required =
             typeof p.auth_required === "boolean"
-              ? p.auth_required
-              : typeof p.requires_api_key === "boolean"
-              ? p.requires_api_key
-              : isString(p.api_key_env);
+              ? (p.auth_required as boolean)
+              : typeof (p as { requires_api_key?: unknown }).requires_api_key === "boolean"
+              ? Boolean((p as { requires_api_key: boolean }).requires_api_key)
+              : isString((p as { api_key_env?: unknown }).api_key_env);
 
           return { name, type, base_url, models, embedding_models, auth_required };
         });
@@ -544,7 +622,7 @@ export default function CompareLLMClient(): JSX.Element {
 
     let docs: IndexDoc[] = [];
     try {
-      const parsed = JSON.parse(jsonInput);
+      const parsed = JSON.parse(jsonInput) as unknown;
       const arr = Array.isArray(parsed) ? parsed : [parsed];
       docs = toDocsFromJsonArray(arr, textField);
       if (!docs.length) {
@@ -575,7 +653,11 @@ export default function CompareLLMClient(): JSX.Element {
       const bad = results.filter((r) => r.status === "rejected");
       let msg = `Embedded & indexed for ${ok} model(s).`;
       if (bad.length) {
-        msg += `\n${bad.length} failed:\n` + bad.map((r) => (r as PromiseRejectedResult).reason?.message || String((r as PromiseRejectedResult).reason)).join("\n");
+        msg +=
+          `\n${bad.length} failed:\n` +
+          bad
+            .map((r) => (r as PromiseRejectedResult).reason?.message || String((r as PromiseRejectedResult).reason))
+            .join("\n");
       }
       alert(msg);
 
@@ -583,6 +665,7 @@ export default function CompareLLMClient(): JSX.Element {
       setDatasetId("");
       await refreshStoresAndDatasets();
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Upload failed:", err);
       alert(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
@@ -614,8 +697,8 @@ export default function CompareLLMClient(): JSX.Element {
 
       const rows: SearchResult[] = matches.map((m) => {
         const base: Record<string, unknown> = { ...(m.metadata || {}) };
-        base.text = m.page_content;
-        if (typeof m.score === "number") base.similarity_score = m.score;
+        (base as { text: string }).text = m.page_content;
+        if (typeof m.score === "number") (base as { similarity_score: number }).similarity_score = m.score;
         return base as SearchResult;
       });
 
@@ -624,6 +707,7 @@ export default function CompareLLMClient(): JSX.Element {
         setSearchContext(snapshot);
       }
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Search failed:", err);
       if (myId === requestIdRef.current) {
         alert(`Search failed: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -682,6 +766,7 @@ export default function CompareLLMClient(): JSX.Element {
 
       if (myId === requestIdRef.current) setMultiSearchResults(payload);
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error("Compare failed:", err);
       if (myId === requestIdRef.current) {
         alert(`Compare failed: ${err instanceof Error ? err.message : "Unknown error"}`);
@@ -705,6 +790,7 @@ export default function CompareLLMClient(): JSX.Element {
         if (selectedDataset === id) setSelectedDataset("");
         if (selectedCompareDataset === id) setSelectedCompareDataset("");
       } catch (err) {
+        // eslint-disable-next-line no-console
         console.error("Delete failed:", err);
       }
     },
@@ -744,7 +830,7 @@ export default function CompareLLMClient(): JSX.Element {
   }, []);
   const handleRemoveModel = useCallback((model: string) => {
     setAnswers((prev) => {
-      const next = { ...prev };
+      const next: AskAnswers = { ...prev };
       delete next[model];
       return next;
     });
@@ -774,7 +860,7 @@ export default function CompareLLMClient(): JSX.Element {
   const pruneUndefined = <T extends Record<string, unknown>>(obj: T): Partial<T> =>
     pruneUndefBrandUtils(obj);
 
-  // === Interactive chat via LangGraph single-stream ===
+  // === Interactive chat via LangGraph single-stream (SSE) ===
   const sendInteractiveMessage = useCallback(async () => {
     if (!activeModel || !interactivePrompt.trim()) return;
     const message = interactivePrompt.trim();
@@ -804,63 +890,51 @@ export default function CompareLLMClient(): JSX.Element {
       const wire = toWire(getProviderKey(activeModel), activeModel);
       const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify({
           wire,
-          messages: apiMessages.slice(0, -1), // history without the just-sent user message (LG will add the last user below if you prefer; we keep consistent with our pattern)
-          // Simpler: include whole transcript (LG reducers handle append). For clean deltas we’ll send the last user as the final message:
-          // messages: apiMessages,
+          // Send only prior history; the server will treat the last user turn as the live prompt
+          messages: apiMessages.slice(0, -1),
           model_params: modelParamsRef.current[activeModel] || {},
-          thread_id: `chat:${activeModel}`, // memory per model window
+          thread_id: `chat:${activeModel}`,
         }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          let evt: LGEvent;
-          try { evt = JSON.parse(trimmed) as LGEvent; } catch { continue; }
-          if (evt.type === "delta" && evt.scope === "single") {
-            const piece = evt.delta || "";
-            setModelChats((prev) => ({
+      await readSSE<LGEvent>(reader, (evt) => {
+        if (evt.type === "delta" && evt.scope === "single") {
+          const piece = evt.delta || "";
+          setModelChats((prev) => ({
+            ...prev,
+            [activeModel]: {
+              ...(prev[activeModel] || { messages: [] }),
+              isStreaming: true,
+              currentResponse: (prev[activeModel]?.currentResponse || "") + piece,
+            },
+          }));
+        } else if (evt.type === "done" && evt.scope === "single") {
+          setModelChats((prev) => {
+            const streamed = prev[activeModel]?.currentResponse || "";
+            return {
               ...prev,
               [activeModel]: {
                 ...(prev[activeModel] || { messages: [] }),
-                isStreaming: true,
-                currentResponse: (prev[activeModel]?.currentResponse || "") + piece,
+                isStreaming: false,
+                currentResponse: "",
+                messages: [
+                  ...(prev[activeModel]?.messages || []),
+                  { role: "assistant", content: streamed, timestamp: Date.now() },
+                ],
               },
-            }));
-          } else if (evt.type === "done" && evt.scope === "single") {
-            setModelChats((prev) => {
-              const streamed = prev[activeModel]?.currentResponse || "";
-              return {
-                ...prev,
-                [activeModel]: {
-                  ...(prev[activeModel] || { messages: [] }),
-                  isStreaming: false,
-                  currentResponse: "",
-                  messages: [
-                    ...(prev[activeModel]?.messages || []),
-                    { role: "assistant", content: streamed, timestamp: Date.now() },
-                  ],
-                },
-              };
-            });
-          }
+            };
+          });
         }
-      }
+      });
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === "AbortError";
       if (!isAbort) {
@@ -871,7 +945,10 @@ export default function CompareLLMClient(): JSX.Element {
             ...prev[activeModel!],
             isStreaming: false,
             currentResponse: "",
-            messages: [...(prev[activeModel!]?.messages || []), { role: "assistant", content: `Error: ${msg}`, timestamp: Date.now() }],
+            messages: [
+              ...(prev[activeModel!]?.messages || []),
+              { role: "assistant", content: `Error: ${msg}`, timestamp: Date.now() },
+            ],
           },
         }));
       }
@@ -884,12 +961,15 @@ export default function CompareLLMClient(): JSX.Element {
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
 
   const resetRun = useCallback(() => {
-    setAnswers(Object.fromEntries(selectedRef.current.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])) as AskAnswers);
+    const initial: AskAnswers = Object.fromEntries(
+      selectedRef.current.map((m) => [m, { answer: "", error: undefined, latency_ms: 0 }])
+    ) as AskAnswers;
+    setAnswers(initial);
     setStartedAt(Date.now());
     setEndedAt(null);
   }, []);
 
-  // === Run (LangGraph MULTI stream) ===
+  // === Run (LangGraph MULTI stream via SSE) ===
   const runPrompt = useCallback(async () => {
     if (!canRun) return;
     streamAbortRef.current?.abort();
@@ -912,8 +992,7 @@ export default function CompareLLMClient(): JSX.Element {
     const startedAtRun = Date.now();
     const modelStart: Record<string, number> = {}; // latency starts on first delta per model
 
-    // inside runPrompt() (you can keep the same variables it closes over)
-    const processEvent = (evt: NDJSONEvent | LGEvent | unknown) => {
+    const processEvent = (evt: NDJSONEvent | LGEvent | unknown): void => {
       // Legacy /chat/* shape
       if (isNDJSONEvent(evt)) {
         if (evt.type === "start") {
@@ -975,7 +1054,6 @@ export default function CompareLLMClient(): JSX.Element {
               ...prev,
               [modelKey]: {
                 ...(prev[modelKey] || { answer: "", latency_ms: 0 }),
-                // append piece-wise tokens
                 answer: (prev[modelKey]?.answer || "") + (evt.text || ""),
               },
             }));
@@ -994,10 +1072,8 @@ export default function CompareLLMClient(): JSX.Element {
             return;
           }
         }
-        // (single-scope is handled in modal/retry)
       }
-
-      // Ignore malformed or unknown lines silently
+      // ignore anything else
     };
 
     try {
@@ -1011,43 +1087,27 @@ export default function CompareLLMClient(): JSX.Element {
 
       const res = await fetch(`${API_BASE}/langgraph/chat/multi/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
 
       const reader = res.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() || "";
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const parsed = JSON.parse(trimmed) as NDJSONEvent | LGEvent;
-            processEvent(parsed);
-          } catch {
-            /* ignore malformed */
-          }
-        }
-      }
-      if (buf.trim()) {
+      await readSSE<NDJSONEvent | LGEvent>(reader, (evt) => {
         try {
-          processEvent(JSON.parse(buf.trim()) as NDJSONEvent | LGEvent);
+          processEvent(evt);
         } catch {
-          /* ignore */
+          // ignore malformed
         }
-      }
+      });
     } catch (err) {
       const isAbort = err instanceof DOMException && err.name === "AbortError";
       if (!isAbort) {
+        // eslint-disable-next-line no-console
         console.error(err);
         setIsRunning(false);
         setEndedAt(Date.now());
@@ -1058,7 +1118,7 @@ export default function CompareLLMClient(): JSX.Element {
     }
   }, [canRun, resetRun, getProviderKey]);
 
-  // === Retry single model via LangGraph single-stream ===
+  // === Retry single model via LangGraph single-stream (SSE) ===
   const retryModel = useCallback(
     async (model: string) => {
       const retryPrompt = (lastRunPrompt || promptRefLive.current).trim();
@@ -1074,7 +1134,10 @@ export default function CompareLLMClient(): JSX.Element {
         const wire = toWire(getProviderKey(model), model);
         const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "text/event-stream",
+          },
           body: JSON.stringify({
             wire,
             messages: [{ role: "user", content: retryPrompt }],
@@ -1090,50 +1153,24 @@ export default function CompareLLMClient(): JSX.Element {
         }
 
         const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buf = "";
-
-        while (true) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buf += decoder.decode(value, { stream: true });
-          const lines = buf.split("\n");
-          buf = lines.pop() || "";
-          for (const line of lines) {
-            const trimmed = line.trim();
-            if (!trimmed) continue;
-            let evt: LGEvent;
-            try { evt = JSON.parse(trimmed) as LGEvent; } catch { continue; }
-            if (evt.scope === "single" && evt.type === "delta") {
-              const piece = evt.delta || "";
-              setAnswers((prev) => ({
-                ...prev,
-                [model]: {
-                  answer: (prev[model]?.answer || "") + piece,
-                  error: prev[model]?.error,
-                  latency_ms: prev[model]?.latency_ms ?? 0,
-                },
-              }));
-            } else if (evt.scope === "single" && evt.type === "done") {
-              setAnswers((prev) => ({
-                ...prev,
-                [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
-              }));
-            }
+        await readSSE<LGEvent>(reader, (evt) => {
+          if (evt.scope === "single" && evt.type === "delta") {
+            const piece = evt.delta || "";
+            setAnswers((prev) => ({
+              ...prev,
+              [model]: {
+                answer: (prev[model]?.answer || "") + piece,
+                error: prev[model]?.error,
+                latency_ms: prev[model]?.latency_ms ?? 0,
+              },
+            }));
+          } else if (evt.scope === "single" && evt.type === "done") {
+            setAnswers((prev) => ({
+              ...prev,
+              [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
+            }));
           }
-        }
-
-        if (buf.trim()) {
-          try {
-            const evt = JSON.parse(buf.trim()) as LGEvent;
-            if (evt.scope === "single" && evt.type === "done") {
-              setAnswers((prev) => ({
-                ...prev,
-                [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
-              }));
-            }
-          } catch { /* noop */ }
-        }
+        });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "Unknown error";
         setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 } }));

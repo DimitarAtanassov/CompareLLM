@@ -3,11 +3,10 @@ from __future__ import annotations
 from typing import Dict, Iterable, Any
 
 class ModelRegistry:
-    """
-    Holds initialized LangChain ChatModels keyed by their 'model key', e.g. "openai:gpt-4o".
-    """
     def __init__(self) -> None:
         self._models: Dict[str, Any] = {}
+        # NEW: stash providers config so we can answer provider_type()
+        self._providers_cfg: Dict[str, Dict[str, Any]] = {}
         print("[ModelRegistry] Initialized empty registry")
 
     @staticmethod
@@ -48,3 +47,17 @@ class ModelRegistry:
         contains = key in self._models
         print(f"[ModelRegistry] __contains__({key}) -> {contains}")
         return contains
+
+    # ---- NEW: provider metadata helpers ----
+    def set_providers_cfg(self, providers_cfg: Dict[str, Dict[str, Any]]) -> None:
+        """Store the providers section from models.yaml so we can answer provider_type()."""
+        self._providers_cfg = providers_cfg or {}
+        print(f"[ModelRegistry] set_providers_cfg -> {list(self._providers_cfg.keys())}")
+
+    def provider_cfg(self, provider_key: str) -> Dict[str, Any]:
+        return self._providers_cfg.get(provider_key, {})
+
+    def provider_type(self, provider_key: str) -> str | None:
+        """Return the 'type' for a provider (e.g., 'openai', 'anthropic', 'gemini', ...)."""
+        cfg = self._providers_cfg.get(provider_key) or {}
+        return cfg.get("type")
