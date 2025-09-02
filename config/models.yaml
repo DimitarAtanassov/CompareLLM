@@ -46,17 +46,17 @@ providers:
     api_key_env: null  # No API key needed for local
     headers: {}
     models:
-      #- llama2
-      #- mistral
+      - llama2
+      - mistral
       # - mixtral
-      # - phi
+      - phi
       # - neural-chat
       # - starling-lm
       # - orca-mini
       # - zephyr
     embedding_models:
-      #- nomic-embed-text
-      #- all-minilm
+      - nomic-embed-text
+      - all-minilm
 
   # Google Gemini Models (optional)
   gemini:
@@ -67,8 +67,6 @@ providers:
     models:
       - gemini-2.5-flash
       - gemini-2.5-pro
-      - gemini-1.5-flash-latest
-      - gemini-1.5-pro-latest
     embedding_models:
       - embedding-001
   

@@ -268,14 +268,14 @@ async def chat_multi_stream(req: Request):
     if registry is None:
         raise HTTPException(500, "Model registry is not initialized")
 
-    # ✅ Use the shared memory saver from app state
+    # Use the shared memory saver from app state
     memory_backend = getattr(req.app.state, "graph_memory", None)
 
     graph, _ = build_multi_model_graph(
         registry,
         targets,
         per_model_params=per_model_params,
-        memory_backend=memory_backend,  # 👈 pass shared saver
+        memory_backend=memory_backend,  #  pass shared saver
     )
     node_to_wire = getattr(graph, "_node_to_wire", {}) or {}
 
@@ -323,26 +323,34 @@ async def chat_multi_stream(req: Request):
                     yield _sse_event({
                         "type": "delta",
                         "scope": "multi",
-                        "model": wire,   # <-- required by the frontend
+                        "model": wire,
                         "node": node,
                         "text": piece,
                         "done": False
                     })
 
             elif et == "on_chat_model_end":
-                # Fallback if nothing streamed for this model
-                if wire and not emitted_any.get(wire, False):
-                    final_text = _end_text_from_event_data(data)
-                    if final_text:
-                        yield _sse_event({
-                            "type": "delta",
-                            "scope": "multi",
-                            "model": wire,
-                            "node": node,
-                            "text": final_text,
-                            "done": False
-                        })
-                    yield _sse_event({"type": "done", "scope": "multi", "model": wire, "done": True}, event="done")
+                if wire:
+                    # Fallback if nothing streamed for this model
+                    if not emitted_any.get(wire, False):
+                        final_text = _end_text_from_event_data(data)
+                        if final_text:
+                            yield _sse_event({
+                                "type": "delta",
+                                "scope": "multi",
+                                "model": wire,
+                                "node": node,
+                                "text": final_text,
+                                "done": False
+                            })
+
+                    # ALWAYS mark this model as done as soon as its node ends
+                    yield _sse_event({
+                        "type": "done",
+                        "scope": "multi",
+                        "model": wire,
+                        "done": True
+                    }, event="done")
 
             elif et == "on_chat_model_error":
                 if wire:
@@ -356,8 +364,9 @@ async def chat_multi_stream(req: Request):
                         "done": False
                     }, event="error")
 
-        # Ensure all requested models have a done marker
+        # Safety net: Ensure all requested models have a done marker
         for w in targets:
             yield _sse_event({"type": "done", "scope": "multi", "model": w, "done": True}, event="done")
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
+
