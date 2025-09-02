@@ -21,6 +21,9 @@ from routers import providers  # /providers endpoints
 from routers import chat
 from routers import langgraph
 
+# ✅ LangGraph memory (shared across all graphs/requests)
+from langgraph.checkpoint.memory import InMemorySaver
+
 
 def _log(msg: str) -> None:
     print(f"[Main] {msg}")
@@ -50,6 +53,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.config = cfg
     _log(f"[startup] Loaded config sections: {list(cfg.keys())}")
+
+    # ✅ Create ONE shared LangGraph memory saver for the whole app
+    app.state.graph_memory = InMemorySaver()
+    _log("[startup] Initialized shared LangGraph memory saver (app.state.graph_memory)")
 
     reg = ModelRegistry()
 

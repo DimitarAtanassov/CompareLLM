@@ -6,8 +6,37 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 from graphs.factory import build_single_model_graph, build_multi_model_graph
+from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
 
 router = APIRouter(prefix="/langgraph", tags=["langgraph"])
+
+# ---------------------------
+# Ingress message sanitizer
+# ---------------------------
+def _lc_messages_in(msgs: list[dict | BaseMessage]) -> list[BaseMessage]:
+    out: list[BaseMessage] = []
+    for m in msgs or []:
+        if isinstance(m, BaseMessage):
+            # Coerce non-string content defensively
+            c = m.content if isinstance(m.content, (str, list)) else str(m.content)
+            m.content = c  # type: ignore[attr-defined]
+            out.append(m)
+            continue
+
+        role = (m or {}).get("role")
+        content = (m or {}).get("content", "")
+        if not isinstance(content, (str, list)):
+            content = str(content)
+
+        if role == "system":
+            out.append(SystemMessage(content=content))
+        elif role in ("user", "human"):
+            out.append(HumanMessage(content=content))
+        elif role in ("assistant", "ai"):
+            out.append(AIMessage(content=content))
+        else:
+            out.append(HumanMessage(content=content))
+    return out
 
 # ---------------------------
 # SSE helpers
@@ -52,7 +81,7 @@ def _chunk_text(chunk: Any) -> str:
     Order:
       1) chunk.content (str)
       2) chunk.text (str)
-      3) chunk.content (list[ {text: "..."} ])
+      3) chunk.content (list[ {text: \"...\"} ])
       4) chunk.delta (str | list | dict)
     """
     # direct string content
@@ -97,8 +126,8 @@ def _chunk_text(chunk: Any) -> str:
 def _end_text_from_event_data(data: Dict[str, Any]) -> str:
     """
     When we reach on_chat_model_end, try to fetch the final text:
-      - data.get("output") may be an AIMessage with .content/.text
-      - or data.get("generations")[0][0].text in some LC versions
+      - data.get(\"output\") may be an AIMessage with .content/.text
+      - or data.get(\"generations\")[0][0].text in some LC versions
     """
     out = data.get("output")
     if out is not None:
@@ -150,7 +179,16 @@ async def chat_single_stream(req: Request):
     registry = getattr(req.app.state, "registry", None)
     if registry is None:
         raise HTTPException(500, "Model registry is not initialized")
-    graph, _ = build_single_model_graph(registry, wire, model_kwargs=model_params)
+
+    # ✅ Use the shared memory saver from app state
+    memory_backend = getattr(req.app.state, "graph_memory", None)
+
+    graph, _ = build_single_model_graph(
+        registry,
+        wire,
+        model_kwargs=model_params,
+        memory_backend=memory_backend,  # 👈 pass shared saver
+    )
 
     async def gen():
         # OPEN
@@ -161,7 +199,10 @@ async def chat_single_stream(req: Request):
         last_beat = asyncio.get_event_loop().time()
         emitted_any = False
 
-        async for ev in graph.astream_events({"messages": messages, "meta": {}}, config=config):
+        # ✅ sanitize incoming messages
+        sanitized = _lc_messages_in(messages)
+
+        async for ev in graph.astream_events({"messages": sanitized, "meta": {}}, config=config):
             # heartbeat ~10s
             now = asyncio.get_event_loop().time()
             if now - last_beat > 10:
@@ -227,7 +268,15 @@ async def chat_multi_stream(req: Request):
     if registry is None:
         raise HTTPException(500, "Model registry is not initialized")
 
-    graph, _ = build_multi_model_graph(registry, targets, per_model_params=per_model_params)
+    # ✅ Use the shared memory saver from app state
+    memory_backend = getattr(req.app.state, "graph_memory", None)
+
+    graph, _ = build_multi_model_graph(
+        registry,
+        targets,
+        per_model_params=per_model_params,
+        memory_backend=memory_backend,  # 👈 pass shared saver
+    )
     node_to_wire = getattr(graph, "_node_to_wire", {}) or {}
 
     async def gen():
@@ -236,7 +285,16 @@ async def chat_multi_stream(req: Request):
         await asyncio.sleep(0)
 
         config = {"configurable": {"thread_id": thread_id}}
-        init_state = {"messages": messages, "targets": targets, "results": {}, "errors": {}}
+
+        # ✅ sanitize incoming messages
+        sanitized = _lc_messages_in(messages)
+
+        init_state = {
+            "messages": sanitized,
+            "targets": targets,
+            "results": {},
+            "errors": {},
+        }
 
         last_beat = asyncio.get_event_loop().time()
         emitted_any: Dict[str, bool] = {w: False for w in targets}
@@ -303,4 +361,3 @@ async def chat_multi_stream(req: Request):
             yield _sse_event({"type": "done", "scope": "multi", "model": w, "done": True}, event="done")
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers=STREAM_HEADERS)
-

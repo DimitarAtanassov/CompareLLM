@@ -1,3 +1,4 @@
+# graphs/factory.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -7,7 +8,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .state import SingleState, MultiState
 from core.model_factory import resolve_and_init_from_registry
-
 
 # =========================
 # Utilities
@@ -46,10 +46,21 @@ def _extract_piece(part: Any) -> str:
 def _chunk_text(chunk: Any) -> str:
     # 1) direct string content
     c = getattr(chunk, "content", None)
+    # Handle the case where .content is a *callable* (older/newer LC variants or wrappers)
+    if callable(c):
+        try:
+            c = c()
+        except Exception:
+            c = None
     if isinstance(c, str) and c:
         return c
     # 2) direct .text
     t = getattr(chunk, "text", None)
+    if callable(t):
+        try:
+            t = t()
+        except Exception:
+            t = None
     if isinstance(t, str) and t:
         return t
     # 3) list content
@@ -80,6 +91,55 @@ def _chunk_text(chunk: Any) -> str:
     return ""
 
 
+def _to_safe_text(obj: Any) -> str:
+    """
+    Ultimate fallback: turn *anything* that looks like a model response into text.
+    Tries _chunk_text first, then .content/.text (calling if bound method),
+    then str(obj).
+    """
+    # Try robust chunk reader
+    s = _chunk_text(obj)
+    if isinstance(s, str) and s.strip():
+        return s
+
+    # Try .content / .text directly (handling callables)
+    for attr in ("content", "text"):
+        if hasattr(obj, attr):
+            val = getattr(obj, attr)
+            if callable(val):
+                try:
+                    val = val()
+                except Exception:
+                    val = None
+            if isinstance(val, str) and val.strip():
+                return val
+            if isinstance(val, list):
+                joined = "".join(_extract_piece(p) for p in val)
+                if joined.strip():
+                    return joined
+
+    # BaseMessage with weird content types
+    if isinstance(obj, BaseMessage):
+        c = obj.content
+        if callable(c):
+            try:
+                c = c()
+            except Exception:
+                c = None
+        if isinstance(c, str) and c.strip():
+            return c
+        if isinstance(c, list):
+            joined = "".join(_extract_piece(p) for p in c)
+            if joined.strip():
+                return joined
+
+    # Last resort
+    try:
+        return str(obj)
+    except Exception:
+        return ""
+
+
 # =========================
 # SINGLE-MODEL GRAPH (streaming)
 # =========================
@@ -90,7 +150,6 @@ def build_single_model_graph(
     memory_backend: Optional[Any] = None,
 ):
     model_kwargs = model_kwargs or {}
-    # ⬇️ previously resolve_and_bind_from_registry(...)
     llm = resolve_and_init_from_registry(registry, wire, model_kwargs)
 
     g = StateGraph(SingleState)
@@ -101,12 +160,19 @@ def build_single_model_graph(
             piece = _chunk_text(chunk)
             if piece:
                 got_any = True
-                yield {"messages": [{"role": "assistant", "content": piece}]}
+                # Stream deltas as strings
+                yield {"messages": [AIMessage(content=piece)]}
+
         if not got_any:
+            # One-shot fallback: coerce the response safely to text
             resp = await llm.ainvoke(_lc_messages(state["messages"]))
-            txt = getattr(resp, "content", None) or getattr(resp, "text", None) or ""
+            txt = _to_safe_text(resp)
             if txt:
-                yield {"messages": [{"role": "assistant", "content": txt}]}
+                # Ensure it's a plain string (AIMessage content supports list[str|dict] too,
+                # but we stick to str to avoid validation edge cases)
+                if not isinstance(txt, str):
+                    txt = str(txt)
+                yield {"messages": [AIMessage(content=txt)]}
 
     g.add_node("chatbot", chatbot)
     g.add_edge(START, "chatbot")
@@ -157,7 +223,7 @@ def build_multi_model_graph(
 
                 if not got_any:
                     resp = await llm.ainvoke(_lc_messages(state["messages"]))
-                    final_text = getattr(resp, "content", None) or getattr(resp, "text", None) or ""
+                    final_text = _to_safe_text(resp)
                     if final_text:
                         yield {"results": {wire: final_text}}
 

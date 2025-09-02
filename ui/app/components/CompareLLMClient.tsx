@@ -303,76 +303,83 @@ function buildChatRequestBody(opts: {
     modelParams,
   } = opts;
 
-  const selections = buildSelections(selected, providerOf);
+  const selections: Selection[] = buildSelections(selected, providerOf);
 
+  // Per-provider model splits
   const provOf = providerOf;
-  const anthropic_models = selected.filter((m) => provOf(m) === "anthropic");
-  const openai_like_models = selected.filter((m) => ["openai", "cerebras"].includes(provOf(m)));
-  const gemini_models = selected.filter((m) => provOf(m) === "gemini");
-  const ollama_models = selected.filter((m) => provOf(m) === "ollama");
-  const cohere_models = selected.filter((m) => provOf(m) === "cohere");
-  const deepseek_models = selected.filter((m) => provOf(m) === "deepseek");
+  const anthropicModels = selected.filter((m) => provOf(m) === "anthropic");
+  const openaiLikeModels = selected.filter((m) => ["openai", "cerebras"].includes(provOf(m)));
+  const geminiModels = selected.filter((m) => provOf(m) === "gemini");
+  const ollamaModels = selected.filter((m) => provOf(m) === "ollama");
+  const cohereModels = selected.filter((m) => provOf(m) === "cohere");
+  const deepseekModels = selected.filter((m) => provOf(m) === "deepseek");
 
+  // Helper: does an object contain any defined value?
+  const hasValues = <T extends object>(o: T): boolean =>
+    Object.values(o as Record<string, unknown>).some((v) => v !== undefined);
+
+  // Build group params by peeking the first model's params for that provider group
   const anthropic_params: AnthropicGroupParams = {};
-  for (const m of anthropic_models) {
+  for (const m of anthropicModels) {
     const p = modelParams[m] || {};
-    if (anthropic_params.thinking_enabled === undefined) anthropic_params.thinking_enabled = p.thinking_enabled;
-    if (anthropic_params.thinking_budget_tokens === undefined) anthropic_params.thinking_budget_tokens = p.thinking_budget_tokens;
-    if (anthropic_params.top_k === undefined) anthropic_params.top_k = p.top_k;
-    if (anthropic_params.top_p === undefined) anthropic_params.top_p = p.top_p;
+    if (anthropic_params.thinking_enabled === undefined) anthropic_params.thinking_enabled = p.thinking_enabled as boolean | undefined;
+    if (anthropic_params.thinking_budget_tokens === undefined) anthropic_params.thinking_budget_tokens = p.thinking_budget_tokens as number | undefined;
+    if (anthropic_params.top_k === undefined) anthropic_params.top_k = p.top_k as number | undefined;
+    if (anthropic_params.top_p === undefined) anthropic_params.top_p = p.top_p as number | undefined;
     if (anthropic_params.stop_sequences === undefined) anthropic_params.stop_sequences = p.stop_sequences as string[] | undefined;
   }
 
   const openai_params: OpenAIGroupParams = {};
-  for (const m of openai_like_models) {
+  for (const m of openaiLikeModels) {
     const p = modelParams[m] || {};
-    if (openai_params.top_p === undefined) openai_params.top_p = p.top_p;
-    if (openai_params.frequency_penalty === undefined) openai_params.frequency_penalty = p.frequency_penalty;
-    if (openai_params.presence_penalty === undefined) openai_params.presence_penalty = p.presence_penalty;
-    if (openai_params.seed === undefined) openai_params.seed = p.seed;
+    if (openai_params.top_p === undefined) openai_params.top_p = p.top_p as number | undefined;
+    if (openai_params.frequency_penalty === undefined) openai_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (openai_params.presence_penalty === undefined) openai_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (openai_params.seed === undefined) openai_params.seed = p.seed as number | undefined;
   }
 
   const gemini_params: GeminiGroupParams = {};
-  for (const m of gemini_models) {
+  for (const m of geminiModels) {
     const p = modelParams[m] || {};
-    if (gemini_params.top_k === undefined) gemini_params.top_k = p.top_k;
-    if (gemini_params.top_p === undefined) gemini_params.top_p = p.top_p;
-    if (gemini_params.candidate_count === undefined) gemini_params.candidate_count = p.candidate_count;
-    if (gemini_params.safety_settings === undefined) gemini_params.safety_settings = p.safety_settings as unknown[];
+    if (gemini_params.top_k === undefined) gemini_params.top_k = p.top_k as number | undefined;
+    if (gemini_params.top_p === undefined) gemini_params.top_p = p.top_p as number | undefined;
+    if (gemini_params.candidate_count === undefined) gemini_params.candidate_count = p.candidate_count as number | undefined;
+    if (gemini_params.safety_settings === undefined) gemini_params.safety_settings = p.safety_settings as unknown[] | undefined;
   }
 
   const ollama_params: OllamaGroupParams = {};
-  for (const m of ollama_models) {
+  for (const m of ollamaModels) {
     const p = modelParams[m] || {};
-    if (ollama_params.mirostat === undefined) ollama_params.mirostat = p.mirostat;
-    if (ollama_params.mirostat_eta === undefined) ollama_params.mirostat_eta = p.mirostat_eta;
-    if (ollama_params.mirostat_tau === undefined) ollama_params.mirostat_tau = p.mirostat_tau;
-    if (ollama_params.num_ctx === undefined) ollama_params.num_ctx = p.num_ctx;
-    if (ollama_params.repeat_penalty === undefined) ollama_params.repeat_penalty = p.repeat_penalty;
+    if (ollama_params.mirostat === undefined) ollama_params.mirostat = p.mirostat as number | undefined;
+    if (ollama_params.mirostat_eta === undefined) ollama_params.mirostat_eta = p.mirostat_eta as number | undefined;
+    if (ollama_params.mirostat_tau === undefined) ollama_params.mirostat_tau = p.mirostat_tau as number | undefined;
+    if (ollama_params.num_ctx === undefined) ollama_params.num_ctx = p.num_ctx as number | undefined;
+    if (ollama_params.repeat_penalty === undefined) ollama_params.repeat_penalty = p.repeat_penalty as number | undefined;
   }
 
   const cohere_params: CohereGroupParams = {};
-  for (const m of cohere_models) {
+  for (const m of cohereModels) {
     const p = modelParams[m] || {};
     if (cohere_params.stop_sequences === undefined) cohere_params.stop_sequences = p.stop_sequences as string[] | undefined;
-    if (cohere_params.seed === undefined) cohere_params.seed = p.seed;
-    if (cohere_params.frequency_penalty === undefined) cohere_params.frequency_penalty = p.frequency_penalty;
-    if (cohere_params.presence_penalty === undefined) cohere_params.presence_penalty = p.presence_penalty;
-    if (cohere_params.k === undefined) cohere_params.k = p.k;
-    if (cohere_params.p === undefined) cohere_params.p = p.p;
+    if (cohere_params.seed === undefined) cohere_params.seed = p.seed as number | undefined;
+    if (cohere_params.frequency_penalty === undefined) cohere_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (cohere_params.presence_penalty === undefined) cohere_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (cohere_params.k === undefined) cohere_params.k = p.k as number | undefined;
+    if (cohere_params.p === undefined) cohere_params.p = p.p as number | undefined;
     if (cohere_params.logprobs === undefined) cohere_params.logprobs = p.logprobs as boolean | undefined;
   }
 
   const deepseek_params: DeepseekGroupParams = {};
-  for (const m of deepseek_models) {
+  for (const m of deepseekModels) {
     const p = modelParams[m] || {};
-    if (deepseek_params.frequency_penalty === undefined) deepseek_params.frequency_penalty = p.frequency_penalty;
-    if (deepseek_params.presence_penalty === undefined) deepseek_params.presence_penalty = p.presence_penalty;
-    if (deepseek_params.top_p === undefined) deepseek_params.top_p = p.top_p;
+    if (deepseek_params.frequency_penalty === undefined) deepseek_params.frequency_penalty = p.frequency_penalty as number | undefined;
+    if (deepseek_params.presence_penalty === undefined) deepseek_params.presence_penalty = p.presence_penalty as number | undefined;
+    if (deepseek_params.top_p === undefined) deepseek_params.top_p = p.top_p as number | undefined;
     if (deepseek_params.logprobs === undefined) deepseek_params.logprobs = p.logprobs as boolean | undefined;
-    if (deepseek_params.top_logprobs === undefined) deepseek_params.top_logprobs = p.top_logprobs;
+    if (deepseek_params.top_logprobs === undefined) deepseek_params.top_logprobs = p.top_logprobs as number | undefined;
   }
 
+  // Assemble final body
   const body: ChatRequestBody = { prompt, selections };
 
   if (history?.length) body.history = history;
@@ -382,17 +389,16 @@ function buildChatRequestBody(opts: {
   if (min_tokens !== undefined) body.min_tokens = min_tokens;
   if (Object.keys(modelParams).length) body.model_params = modelParams;
 
-  const has = <T extends object>(o: T): boolean =>
-    Object.values(o as Record<string, unknown>).some((v) => v !== undefined);
-  if (has(anthropic_params)) body.anthropic_params = anthropic_params;
-  if (has(openai_params)) body.openai_params = openai_params;
-  if (has(gemini_params)) body.gemini_params = gemini_params;
-  if (has(ollama_params)) body.ollama_params = ollama_params;
-  if (has(cohere_params)) body.cohere_params = cohere_params;
-  if (has(deepseek_params)) body.deepseek_params = deepseek_params;
+  if (hasValues(anthropic_params)) body.anthropic_params = anthropic_params;
+  if (hasValues(openai_params)) body.openai_params = openai_params;
+  if (hasValues(gemini_params)) body.gemini_params = gemini_params;
+  if (hasValues(ollama_params)) body.ollama_params = ollama_params;
+  if (hasValues(cohere_params)) body.cohere_params = cohere_params;
+  if (hasValues(deepseek_params)) body.deepseek_params = deepseek_params;
 
   return body;
 }
+
 
 // === LangGraph helpers ===
 function toWire(providerKey: string, model: string): string {
@@ -474,6 +480,14 @@ export default function CompareLLMClient(): JSX.Element {
   const [expandedModels, setExpandedModels] = useState<Set<string>>(new Set());
   const [lastRunPrompt, setLastRunPrompt] = useState<string>("");
 
+  // One shared conversation id for both /multi and /single calls
+  const [threadId] = useState<string>(() => {
+    const uuid =
+      (typeof crypto !== "undefined" && "randomUUID" in crypto && crypto.randomUUID()) ||
+      `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    return `thread:${uuid}`;
+  });
+
   // ==== LIVE REFS to avoid stale-closure on immediate Run after typing/changing params ====
   const modelParamsRef = useRef<ModelParamsMap>({});
   const globalTempRef = useRef<number | undefined>(undefined);
@@ -505,7 +519,7 @@ export default function CompareLLMClient(): JSX.Element {
   const getProviderType = useCallback((m: string): ProviderBrand => {
     const s = (m || "").toLowerCase();
     const prefix = s.split(":", 1)[0];
-    if (PREFIX_TO_BRAND[prefix]) return PREFIX_TO_BRAND[prefix];
+    if (PREFIX_TO_BRAND[prefix]) return PREFIX_TO_BRAND[prefix] as ProviderBrand;
     if (modelToBrand[m]) return modelToBrand[m];
     return coerceBrand(m);
   }, [modelToBrand]);
@@ -896,10 +910,9 @@ export default function CompareLLMClient(): JSX.Element {
         },
         body: JSON.stringify({
           wire,
-          // Send only prior history; the server will treat the last user turn as the live prompt
-          messages: apiMessages.slice(0, -1),
+          messages: apiMessages, // include the latest user message
           model_params: modelParamsRef.current[activeModel] || {},
-          thread_id: `chat:${activeModel}`,
+          thread_id: threadId,   // shared thread for memory
         }),
         signal: controller.signal,
       });
@@ -955,7 +968,7 @@ export default function CompareLLMClient(): JSX.Element {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, getProviderKey]);
+  }, [activeModel, interactivePrompt, getProviderKey, threadId]);
 
   // Providers-only chat streaming bits
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
@@ -1091,7 +1104,10 @@ export default function CompareLLMClient(): JSX.Element {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          ...body,
+          thread_id: threadId, // shared thread id so single+multi share memory
+        }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
@@ -1116,7 +1132,7 @@ export default function CompareLLMClient(): JSX.Element {
       setIsRunning(false);
       streamAbortRef.current = null;
     }
-  }, [canRun, resetRun, getProviderKey]);
+  }, [canRun, resetRun, getProviderKey, threadId]);
 
   // === Retry single model via LangGraph single-stream (SSE) ===
   const retryModel = useCallback(
@@ -1142,7 +1158,7 @@ export default function CompareLLMClient(): JSX.Element {
             wire,
             messages: [{ role: "user", content: retryPrompt }],
             model_params: modelParamsRef.current[model] || {},
-            thread_id: `retry:${model}`,
+            thread_id: threadId, // shared thread id
           }),
           signal: controller.signal,
         });
@@ -1176,7 +1192,7 @@ export default function CompareLLMClient(): JSX.Element {
         setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 } }));
       }
     },
-    [lastRunPrompt, getProviderKey]
+    [lastRunPrompt, getProviderKey, threadId]
   );
 
   const repromptFromResults = useCallback(() => {
