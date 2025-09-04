@@ -1,4 +1,3 @@
-# graphs/factory.py
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -6,8 +5,100 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Base
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import InMemorySaver
 
-from .state import SingleState, MultiState
+from .state import SingleState, MultiState, EmbeddingState
 from core.model_factory import resolve_and_init_from_registry
+
+# =========================
+# MULTI-MODEL EMBEDDING SEARCH GRAPH (non-streaming)
+# =========================
+def build_embedding_comparison_graph(
+    registry: Any,  # EmbeddingRegistry
+    embedding_keys: List[str],
+    dataset_id: str,
+    memory_backend: Optional[Any] = None,
+):
+    from langchain_core.vectorstores import VectorStore
+    from core.embedding_registry import EmbeddingRegistry as EmbeddingRegistryType
+    import re
+
+    emb_reg: EmbeddingRegistryType = registry
+    g = StateGraph(EmbeddingState)
+
+    def _safe_node_name(w: str, idx: int) -> str:
+        return f"e_{idx}_{re.sub(r'[^a-zA-Z0-9_]', '_', w)}"
+
+    key_to_node = {k: _safe_node_name(k, i) for i, k in enumerate(embedding_keys)}
+
+    def _make_search_node(emb_key: str):
+        async def run_search(state: EmbeddingState):
+            query = state["query"]
+            search_params = state["search_params"]
+            k = search_params.get("k", 5)
+            stype = (search_params.get("search_type") or "similarity").strip().lower()
+            store_id = f"{dataset_id}::{emb_key}"
+
+            try:
+                vs: VectorStore = emb_reg.get_store(store_id)
+                docs_with_scores = []
+
+                if stype == "similarity":
+                    if search_params.get("with_scores"):
+                        results = await vs.asimilarity_search_with_score(query=query, k=k)
+                        docs_with_scores = [{"doc": doc, "score": score} for doc, score in results]
+                    else:
+                        results = await vs.asimilarity_search(query=query, k=k)
+                        docs_with_scores = [{"doc": doc, "score": None} for doc in results]
+                else:
+                    search_kwargs: Dict[str, Any] = {"k": k}
+                    if stype == "mmr":
+                        if "fetch_k" in search_params:
+                            search_kwargs["fetch_k"] = search_params["fetch_k"]
+                        if "lambda_mult" in search_params:
+                            search_kwargs["lambda_mult"] = search_params["lambda_mult"]
+                    elif stype == "similarity_score_threshold":
+                        if "score_threshold" in search_params:
+                            search_kwargs["score_threshold"] = search_params["score_threshold"]
+                    else:
+                        raise ValueError(f"Unsupported search type: {stype}")
+
+                    retriever = vs.as_retriever(search_type=stype, search_kwargs=search_kwargs)
+                    retrieved_docs = await retriever.ainvoke(query)
+                    
+                    if search_params.get("with_scores"):
+                        qvec = vs.embeddings.embed_query(query)
+                        scored = await vs.asimilarity_search_with_score_by_vector(qvec, k=max(k, len(retrieved_docs)))
+                        score_by_id: Dict[Optional[str], float] = {getattr(d, "id", None): float(s) for d, s in scored}
+                        docs_with_scores = [{"doc": d, "score": score_by_id.get(getattr(d, "id", None))} for d in retrieved_docs]
+                    else:
+                        docs_with_scores = [{"doc": doc, "score": None} for doc in retrieved_docs]
+
+                items = [{
+                    "page_content": dws["doc"].page_content,
+                    "metadata": dws["doc"].metadata,
+                    "score": dws["score"]
+                } for dws in docs_with_scores]
+
+                return {"results": {emb_key: {"items": items[:k]}}}
+
+            except Exception as e:
+                return {"errors": {emb_key: f"{type(e).__name__}: {e}"}}
+        return run_search
+
+    for emb_key, node_name in key_to_node.items():
+        g.add_node(node_name, _make_search_node(emb_key))
+
+    def router(state: EmbeddingState):
+        return [key_to_node[k] for k in state["targets"] if k in key_to_node]
+
+    g.add_conditional_edges(START, router)
+
+    for node_name in key_to_node.values():
+        g.add_edge(node_name, END)
+
+    checkpointer = memory_backend or InMemorySaver()
+    compiled = g.compile(checkpointer=checkpointer)
+    return compiled, checkpointer
+
 
 # =========================
 # Utilities
@@ -195,65 +286,51 @@ def build_multi_model_graph(
     per_model_params = per_model_params or {}
     g = StateGraph(MultiState)
 
+    # ---- Helper to create a model-invoking node ----
+    def _make_chatbot_node(wire: str):
+        async def chatbot_node(state: MultiState):
+            # Resolve the specific LLM from the registry
+            model_kwargs = per_model_params.get(wire, {})
+            llm = resolve_and_init_from_registry(registry, wire, model_kwargs)
+
+            # Stream back deltas
+            got_any = False
+            async for chunk in llm.astream(_lc_messages(state["messages"])):
+                piece = _chunk_text(chunk)
+                if piece:
+                    got_any = True
+                    yield {"results": {wire: piece}}
+            
+            # One-shot fallback
+            if not got_any:
+                resp = await llm.ainvoke(_lc_messages(state["messages"]))
+                txt = _to_safe_text(resp)
+                if txt:
+                    yield {"results": {wire: txt}}
+
+        return chatbot_node
+
+    # ---- Graph construction ----
     def _safe_node_name(w: str, idx: int) -> str:
         import re
-        return f"m_{idx}_{re.sub(r'[^a-zA-Z0-9_]', '_', w)}"
+        return f"w_{idx}_{re.sub(r'[^a-zA-Z0-9_]', '_', w)}"
 
-    # Map wires <-> node names
     wire_to_node = {w: _safe_node_name(w, i) for i, w in enumerate(wires)}
-    node_to_wire = {node: wire for wire, node in wire_to_node.items()}
 
-    def _make_model_node(wire: str):
-        async def run_model(state: MultiState):
-            if wire not in state["targets"]:
-                return
-            params = per_model_params.get(wire, {})
-            try:
-                llm = resolve_and_init_from_registry(registry, wire, params)
+    # Add a node for each model wire
+    for wire, node_name in wire_to_node.items():
+        g.add_node(node_name, _make_chatbot_node(wire))
 
-                sofar = ""
-                got_any = False
-                async for chunk in llm.astream(_lc_messages(state["messages"])):
-                    piece = _chunk_text(chunk)
-                    if not piece:
-                        continue
-                    got_any = True
-                    sofar += piece
-                    yield {"results": {wire: sofar}}
-
-                if not got_any:
-                    resp = await llm.ainvoke(_lc_messages(state["messages"]))
-                    final_text = _to_safe_text(resp)
-                    if final_text:
-                        yield {"results": {wire: final_text}}
-
-            except Exception as e:
-                yield {"errors": {wire: f"{type(e).__name__}: {e}"}}
-
-        return run_model
-
-    for w, node_name in wire_to_node.items():
-        g.add_node(node_name, _make_model_node(w))
-
+    # Router: fan out to all targeted models
     def router(state: MultiState):
-        return {}
+        return [wire_to_node[t] for t in state["targets"] if t in wire_to_node]
 
-    g.add_node("router", router)
+    g.add_conditional_edges(START, router)
 
-    def route_to_targets(state: MultiState):
-        return [wire_to_node[w] for w in state["targets"] if w in wire_to_node]
-
-    g.add_conditional_edges("router", route_to_targets)
-
+    # All model nodes connect to the end
     for node_name in wire_to_node.values():
         g.add_edge(node_name, END)
 
-    g.add_edge(START, "router")
-
     checkpointer = memory_backend or InMemorySaver()
     compiled = g.compile(checkpointer=checkpointer)
-
-    # <-- expose node->wire so the router can recover the model id on SSE events
-    setattr(compiled, "_node_to_wire", node_to_wire)
-
     return compiled, checkpointer
