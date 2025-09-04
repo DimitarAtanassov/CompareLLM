@@ -24,7 +24,8 @@ import ChatResults from "./chat/ChatResults";
 import { PROVIDER_BADGE_BG } from "../lib/colors";
 import EmbeddingLeftRail from "./embeddings/EmbeddingLeftRail";
 import EmbeddingRightRail from "./embeddings/EmbeddingRightRail";
-
+import ImageLeftRail, { ImageEndpoint } from "./image/ImageLeftRail";
+import ImageRightRail from "./image/ImageRightRail";
 // ---- embeddings API helpers ----
 import {
   listEmbeddingModels,
@@ -38,6 +39,7 @@ import {
   deleteStore,
   type IndexDoc,
 } from "../lib/utils";
+import ImageResults from "./image/ImageResults";
 
 const PREFIX_TO_BRAND: Record<string, ProviderBrand> = {
   openai: "openai",
@@ -425,7 +427,7 @@ function buildLangGraphMultiBody(opts: {
 
 export default function CompareLLMClient(): JSX.Element {
   // ==== STATE ====
-  const [activeTab, setActiveTab] = useState<"chat" | "embedding">("chat");
+  const [activeTab, setActiveTab] = useState<"chat" | "embedding" | "image">("chat");
   const [embedView, setEmbedView] = useState<"single" | "compare">("single");
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
@@ -487,6 +489,40 @@ export default function CompareLLMClient(): JSX.Element {
       `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
     return `thread:${uuid}`;
   });
+
+  // ---- image processing state ----
+  const [allVisionModels, setAllVisionModels] = useState<string[]>([]);
+  const [selectedVisionModels, setSelectedVisionModels] = useState<string[]>([]);
+
+  type ImgResp = {
+    text?: string;
+    json?: unknown;
+    image_base64?: string;
+    image_mime?: string;
+    image_url?: string;
+  };
+  const [imageOutputs, setImageOutputs] = useState<
+    Record<string, { response: ImgResp | null; error: string | null }>
+  >({});
+
+  const IMAGE_ENDPOINTS: ImageEndpoint[] = [
+    // Adjust to your actual backend routes/names
+    { id: "analyze",   label: "Analyze Image",     path: "/vision/analyze",   help: "Sends image + optional prompt and returns JSON/text." },
+    { id: "transform", label: "Transform/Generate", path: "/vision/transform", help: "Returns a processed image and/or JSON/text." },
+  ];
+
+  const [imageEndpointId, setImageEndpointId] = useState<string>(IMAGE_ENDPOINTS[0].id);
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imagePrompt, setImagePrompt] = useState<string>("");
+  const [isProcessingImage, setIsProcessingImage] = useState<boolean>(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageResponse, setImageResponse] = useState<{
+    text?: string;
+    json?: unknown;
+    image_base64?: string;
+    image_mime?: string;
+    image_url?: string;
+  } | null>(null);
 
   // ==== LIVE REFS to avoid stale-closure on immediate Run after typing/changing params ====
   const modelParamsRef = useRef<ModelParamsMap>({});
@@ -592,6 +628,60 @@ export default function CompareLLMClient(): JSX.Element {
 
         setProviders(normalized);
         setAllModels([...new Set(normalized.flatMap((p) => p.models ?? []))].sort());
+        // Vision-capable models (via /providers/vision). Fallback: all chat models.
+        try {
+          const vres = await fetch(`${API_BASE}/providers/vision`, { cache: "no-store" });
+          if (!vres.ok) throw new Error(`Failed to load vision providers: ${vres.status} ${vres.statusText}`);
+          const vraw = (await vres.json()) as unknown;
+
+          const vProvsUnknown: unknown = Array.isArray(vraw)
+            ? vraw
+            : Array.isArray((vraw as { providers?: unknown })?.providers)
+            ? (vraw as { providers: unknown[] }).providers
+            : (vraw as { providers?: unknown })?.providers && typeof (vraw as { providers?: unknown })?.providers === "object"
+            ? Object.values((vraw as { providers: Record<string, unknown> }).providers)
+            : [];
+
+          const vArr = Array.isArray(vProvsUnknown) ? vProvsUnknown : [];
+          const vProviders: ProviderInfo[] = vArr.map((item, idx) => {
+            const p = (item ?? {}) as Record<string, unknown>;
+            const name =
+              isString(p.name) ? p.name : isString(p.key) ? p.key : isString(p.id) ? p.id : `prov_${idx}`;
+            const type = isString(p.type) ? p.type : "unknown";
+            const base_url = isString(p.base_url) ? p.base_url : "";
+
+            const rawModels = Array.isArray(p.models)
+              ? p.models
+              : Array.isArray((p as { chat_models?: unknown[] }).chat_models)
+              ? (p as { chat_models: unknown[] }).chat_models
+              : Array.isArray((p as { llm_models?: unknown[] }).llm_models)
+              ? (p as { llm_models: unknown[] }).llm_models
+              : [];
+            const models = rawModels.map(pickModelName).filter((m): m is string => !!m);
+
+            const rawEmb = Array.isArray(p.embedding_models)
+              ? p.embedding_models
+              : Array.isArray((p as { embed_models?: unknown[] }).embed_models)
+              ? (p as { embed_models: unknown[] }).embed_models
+              : [];
+            const embedding_models = rawEmb.map(pickModelName).filter((m): m is string => !!m);
+
+            const auth_required =
+              typeof p.auth_required === "boolean"
+                ? (p.auth_required as boolean)
+                : typeof (p as { requires_api_key?: unknown }).requires_api_key === "boolean"
+                ? Boolean((p as { requires_api_key: boolean }).requires_api_key)
+                : isString((p as { api_key_env?: unknown }).api_key_env);
+
+            return { name, type, base_url, models, embedding_models, auth_required };
+          });
+
+          const visionModels = [...new Set(vProviders.flatMap((p) => p.models ?? []))].sort();
+          setAllVisionModels(visionModels);
+        } catch {
+          // Graceful fallback: treat all chat models as vision-capable
+          setAllVisionModels([...new Set(normalized.flatMap((p) => p.models ?? []))].sort());
+        }
 
         // Embedding models & stores
         const [embM, storesRes] = await Promise.all([listEmbeddingModels(), listStores()]);
@@ -810,6 +900,75 @@ export default function CompareLLMClient(): JSX.Element {
     },
     [stores, refreshStoresAndDatasets, selectedDataset, selectedCompareDataset]
   );
+
+  const runImageProcessing = useCallback(async () => {
+    if (!imageFile || selectedVisionModels.length === 0) return;
+
+    setIsProcessingImage(true);
+    setImageError(null);
+    // prime per-model outputs
+    setImageOutputs(Object.fromEntries(selectedVisionModels.map((m) => [m, { response: null, error: null }])));
+
+    const endpoint = IMAGE_ENDPOINTS.find((e) => e.id === imageEndpointId) || IMAGE_ENDPOINTS[0];
+    const url = `${API_BASE}${endpoint.path}`;
+
+    await Promise.allSettled(
+      selectedVisionModels.map(async (model) => {
+        try {
+          const form = new FormData();
+          form.append("file", imageFile);
+          if (imagePrompt.trim()) form.append("prompt", imagePrompt.trim());
+
+          // Pass model info; your backend can use either or ignore
+          form.append("model", model);
+          const provKey = getProviderKey(model);
+          if (provKey) form.append("provider", provKey);
+          form.append("wire", toWire(provKey, model));
+
+          const res = await fetch(url, { method: "POST", body: form });
+          if (!res.ok) {
+            let msg = `HTTP ${res.status}`;
+            try {
+              const j = (await res.json()) as { detail?: string };
+              if (j?.detail) msg = j.detail;
+            } catch {}
+            throw new Error(msg);
+          }
+
+          const payload = (await res.json()) as {
+            text?: string; message?: string; json?: unknown; result?: unknown;
+            image_base64?: string; image_mime?: string; image_url?: string;
+          };
+
+          const normalized: ImgResp = {
+            text:
+              typeof payload.text === "string" ? payload.text :
+              typeof payload.message === "string" ? payload.message : undefined,
+            json: typeof payload.json !== "undefined" ? payload.json : payload.result,
+            image_base64: payload.image_base64,
+            image_mime: payload.image_mime,
+            image_url: payload.image_url,
+          };
+
+          setImageOutputs((prev) => ({ ...prev, [model]: { response: normalized, error: null } }));
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : "Unknown error";
+          setImageOutputs((prev) => ({ ...prev, [model]: { response: null, error: msg } }));
+        }
+      })
+    );
+
+    setIsProcessingImage(false);
+  }, [API_BASE, imageEndpointId, imageFile, imagePrompt, selectedVisionModels, getProviderKey]);
+
+
+  const clearImageInputs = useCallback(() => {
+    setImageFile(null);
+    setImagePrompt("");
+    setImageError(null);
+    setImageResponse(null);
+  }, []);
+
 
   // =============================
   // Chat tab
@@ -1228,6 +1387,8 @@ export default function CompareLLMClient(): JSX.Element {
           void runPrompt();
         } else if (activeTab === "embedding" && searchQuery.trim()) {
           void performSearch();
+        } else if (activeTab === "image" && imageFile) {            // NEW
+          void runImageProcessing();
         }
       }
       if (evt.key === "Escape" && activeModel) closeModelChat();
@@ -1284,10 +1445,11 @@ export default function CompareLLMClient(): JSX.Element {
 
       <Tabs
         activeId={activeTab}
-        onChange={(id) => setActiveTab(id as "chat" | "embedding")}
+        onChange={(id) => setActiveTab(id as "chat" | "embedding" | "image")}
         tabs={[
           { id: "chat", label: "Chat Models" },
           { id: "embedding", label: "Embeddings" },
+          { id: "image", label: "Image Processing" }, // NEW
         ]}
       />
 
@@ -1580,6 +1742,44 @@ export default function CompareLLMClient(): JSX.Element {
           />
         </main>
       )}
+      {activeTab === "image" && (
+        <main className="grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-6 items-start">
+          {/* Left rail: model picker, endpoint, uploader, prompt */}
+          <ImageLeftRail
+            // NEW: model selection
+            allVisionModels={allVisionModels}
+            selectedVisionModels={selectedVisionModels}
+            toggleVisionModel={(m) =>
+              setSelectedVisionModels((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))
+            }
+            selectAllVision={() => setSelectedVisionModels(allVisionModels)}
+            clearAllVision={() => setSelectedVisionModels([])}
+            getProviderType={getProviderType}
+
+            // Endpoint/prompt/uploader
+            endpoints={IMAGE_ENDPOINTS}
+            selectedEndpointId={imageEndpointId}
+            setSelectedEndpointId={setImageEndpointId}
+            imageFile={imageFile}
+            setImageFile={setImageFile}
+            prompt={imagePrompt}
+            setPrompt={setImagePrompt}
+            isProcessing={isProcessingImage}
+            onRun={runImageProcessing}
+            onClear={clearImageInputs}
+          />
+
+          {/* Right rail: multi-model results */}
+          <ImageResults
+            isProcessing={isProcessingImage}
+            error={imageError}
+            outputs={imageOutputs}
+            brandOf={getProviderType}
+          />
+        </main>
+      )}
+
+
     </div>
   );
 }

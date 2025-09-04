@@ -7,6 +7,7 @@ from typing import AsyncIterator, Any, Dict
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers import vision
 from routers import embeddings
 from core.dataset_catalog import DatasetCatalog
 from core.embedding_factory import build_embedding_model
@@ -138,6 +139,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(embeddings.router)
     app.include_router(langgraph.router)
+    app.include_router(vision.router)
 
     # Health + inventory
     @app.get("/health")
