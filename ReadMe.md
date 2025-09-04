@@ -3,7 +3,7 @@
 A **multi-provider AI playground** for running, comparing, and embedding across different LLMs—in real time.
 Frontend: **Next.js / React** · Backend: **FastAPI** · Orchestration & memory: **LangChain + LangGraph** · Infra: **Docker**
 
-Supports Anthropic, OpenAI, DeepSeek, Google Gemini, Ollama (local), Cerebras, Cohere, Voyage, and more.
+Supports Anthropic, OpenAI, DeepSeek, Google, Ollama (local), Cerebras, Cohere, Voyage, and more.
 
 ---
 
@@ -29,7 +29,7 @@ Supports Anthropic, OpenAI, DeepSeek, Google Gemini, Ollama (local), Cerebras, C
 * **Parameter Control**
 
   * Temperature, top-p/top-k, max/min tokens, penalties, stop sequences, and more
-  * UI parameters are **normalized per provider** (e.g., Cohere `p/k`, Ollama `num_predict`, Gemini `max_output_tokens`)
+  * UI parameters are **normalized per provider** (e.g., Cohere `p/k`, Ollama `num_predict`, Google `max_output_tokens`)
 
 * **Observability (Optional)**
 
@@ -73,7 +73,7 @@ app.state.graph_memory = InMemorySaver()  # one saver for the whole app
 
 ### Building chat models with UI parameters
 
-The UI collects **global** and **per-model** params; the backend **normalizes** these into provider-specific kwargs (e.g., `max_tokens` → `num_predict` for Ollama, `top_p` → `p` for Cohere, Gemini’s `max_output_tokens`, OpenAI-style penalties, etc.). We prefer constructing a fresh LangChain chat instance **with params applied at initialization**, and bind any leftovers to keep compatibility across LC versions.
+The UI collects **global** and **per-model** params; the backend **normalizes** these into provider-specific kwargs (e.g., `max_tokens` → `num_predict` for Ollama, `top_p` → `p` for Cohere, Google’s `max_output_tokens`, OpenAI-style penalties, etc.). We prefer constructing a fresh LangChain chat instance **with params applied at initialization**, and bind any leftovers to keep compatibility across LC versions.
 
 High-level flow:
 
@@ -177,7 +177,7 @@ Set `LANGCHAIN_TRACING_V2=false` (or remove tracing env vars) and restart.
 * **Backend**: FastAPI (Python 3.11)
 * **Orchestration**: LangChain + LangGraph
 * **Infra**: Docker Compose
-* **Providers**: Anthropic, OpenAI, DeepSeek, Google Gemini, Ollama, Cerebras, Cohere, Voyage
+* **Providers**: Anthropic, OpenAI, DeepSeek, Google, Ollama, Cerebras, Cohere, Voyage
 
 ---
 
@@ -212,7 +212,7 @@ OPENAI_API_KEY=sk-proj-...
 DEEPSEEK_API_KEY=sk-...
 
 # ======================
-# Google Gemini (Chat)
+# Google AI (Chat)
 # ======================
 GOOGLE_API_KEY=AIza...
 

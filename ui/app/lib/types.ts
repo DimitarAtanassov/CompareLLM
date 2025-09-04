@@ -5,7 +5,6 @@ export type ProviderWire = "anthropic" | "openai" | "gemini" | "ollama" | "coher
 export type ProviderBrand =
   | "openai"
   | "anthropic"
-  | "gemini"
   | "ollama"
   | "deepseek"
   | "cerebras"
@@ -40,7 +39,7 @@ export type PerModelParam = {
   frequency_penalty?: number;
   presence_penalty?: number;
   seed?: number;
-  // Gemini
+  // Google
   candidate_count?: number;
   safety_settings?: unknown[];
   // Ollama
@@ -110,7 +109,7 @@ export type EnhancedChatRequest = {
     presence_penalty?: number;
     seed?: number;
   };
-  gemini_params?: {
+  google_params?: {
     top_k?: number;
     top_p?: number;
     candidate_count?: number;

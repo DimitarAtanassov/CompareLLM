@@ -34,7 +34,7 @@ def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
     elif ptype == "anthropic":
         return ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers)
-    elif ptype == "gemini":
+    elif ptype == "google":
         return ChatGoogleGenerativeAI(model=model_name, api_key=api_key)
     elif ptype == "ollama":
         return ChatOllama(model=model_name, base_url=base_url)
@@ -70,7 +70,7 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     # max tokens
     mt = params.get("max_tokens")
     if mt is not None:
-        if pt == "gemini":
+        if pt == "google":
             out["max_output_tokens"] = mt
         elif pt == "ollama":
             out["num_predict"] = mt
@@ -88,11 +88,11 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     if params.get("top_k") is not None:
         if pt == "cohere":
             out["k"] = params["top_k"]    # Cohere uses 'k'
-        elif pt in ("gemini", "ollama"):
+        elif pt in ("google", "ollama"):
             out["top_k"] = params["top_k"]
 
     # ✅ GEMINI: flat reasoning budget
-    if pt == "gemini":
+    if pt == "google":
         # prefer flat `thinking_budget`, fall back to `thinking_budget_tokens`
         tb = params.get("thinking_budget")
         if tb is None:
@@ -172,7 +172,7 @@ def build_chat_model_with_params(
     elif ptype == "anthropic":
         model_obj = ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers, **norm)
 
-    elif ptype == "gemini":
+    elif ptype == "google":
         model_obj = ChatGoogleGenerativeAI(model=model_name, api_key=api_key, **norm)
 
     elif ptype == "cohere":

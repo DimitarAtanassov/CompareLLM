@@ -28,7 +28,7 @@ def build_embedding_model(
 
     Supported ptypes (from models.yaml):
       - openai
-      - gemini
+      - google
       - cohere
       - voyage
       - ollama
@@ -50,8 +50,8 @@ def build_embedding_model(
         # If your deployment needs extra headers/params, pass via env or add here.
         return OpenAIEmbeddings(model=model_name, api_key=api_key, base_url=base_url)
 
-    # ---- Google Gemini ----
-    if ptype == "gemini":
+    # ---- Google ----
+    if ptype == "google":
         if GoogleGenerativeAIEmbeddings is None:
             raise RuntimeError("langchain-google-genai not installed")
         # Typical models: 'text-embedding-004', 'embedding-001'

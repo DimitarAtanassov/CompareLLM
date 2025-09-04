@@ -42,7 +42,7 @@ class ProviderOpenAIParams(BaseModel):
     presence_penalty: Optional[float] = None
     seed: Optional[int] = None
 
-class ProviderGeminiParams(BaseModel):
+class ProviderGoogleParams(BaseModel):
     top_k: Optional[int] = None
     top_p: Optional[float] = None
     candidate_count: Optional[int] = None
@@ -98,7 +98,7 @@ class ChatRequest(BaseModel):
 
     anthropic_params: Optional[ProviderAnthropicParams] = None
     openai_params: Optional[ProviderOpenAIParams] = None
-    gemini_params: Optional[ProviderGeminiParams] = None
+    google_params: Optional[ProviderGoogleParams] = None
     ollama_params: Optional[ProviderOllamaParams] = None
     cohere_params: Optional[ProviderCohereParams] = None
     deepseek_params: Optional[ProviderDeepseekParams] = None
@@ -180,8 +180,8 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
             if v is not None:
                 provider_group[k] = v
 
-    elif sel.provider == "gemini" and req.gemini_params:
-        gp = req.gemini_params.model_dump(exclude_none=True)
+    elif sel.provider == "google" and req.google_params:
+        gp = req.google_params.model_dump(exclude_none=True)
         if "max_tokens" in common:
             provider_group["max_output_tokens"] = common.pop("max_tokens")
         provider_group.update(gp)
@@ -206,7 +206,7 @@ def _bind_model(sel: ModelSelection, chat_model: Any, req: ChatRequest) -> Any:
     # Per-model overrides (your existing pattern)
     per_model = (req.model_params or {}).get(sel.model) or {}
 
-    # Gemini rename already handled above; nothing special for Cohere
+    # Google rename already handled above; nothing special for Cohere
 
     bound_kwargs = _merge_params(_merge_params(common, provider_group), per_model)
 
@@ -265,7 +265,7 @@ async def chat_stream(req: ChatRequest, request: Request):
     """
     Minimal, provider-agnostic streamer using LangChain's astream().
     - Sends {start, delta, end} per model + final all_done.
-    - No special-casing for providers (Gemini included).
+    - No special-casing for providers.
     - Falls back to ainvoke()/invoke() if astream is not available.
     """
     prompt_tmpl = _build_prompt(req.system)

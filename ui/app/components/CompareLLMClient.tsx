@@ -268,7 +268,7 @@ function buildModelToProviderKeyMap(providers: ProviderInfo[]): Record<string, s
 function uiWireForProviderKey(provKey: string): ProviderWire {
   if (provKey === "openai") return "openai";
   if (provKey === "anthropic") return "anthropic";
-  if (provKey === "gemini") return "gemini";
+  if (provKey === "google") return "gemini";
   if (provKey === "ollama") return "ollama";
   if (provKey === "cohere") return "cohere";
   if (provKey === "cerebras") return "openai";

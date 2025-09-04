@@ -70,7 +70,7 @@ _OPENAI_VISION = [
     re.compile(r"^o[34]($|-)", re.I),          # o3, o4 families
 ]
 
-_GEMINI_VISION = [
+_GOOGLE_VISION = [
     re.compile(r"^gemini-1\.5($|-)", re.I),
     re.compile(r"^gemini-pro-vision($|-)", re.I),
     re.compile(r"^gemini-2\.0($|-)", re.I),
@@ -176,8 +176,8 @@ def _is_vision_model(provider_type: str, model_name: str, meta: Dict[str, Any], 
     if pt == "openai":
         if _matches_any(model_name, _OPENAI_VISION):
             return True
-    elif pt == "gemini":
-        if _matches_any(model_name, _GEMINI_VISION):
+    elif pt == "google":
+        if _matches_any(model_name, _GOOGLE_VISION):
             return True
     elif pt == "anthropic":
         # already returned True above; keep for completeness

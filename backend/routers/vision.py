@@ -49,14 +49,14 @@ def _anthropic_part(mime: str, b: bytes) -> dict:
     return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": _b64(b)}}
 
 def _image_url_part(data_uri: str) -> dict:
-    # openai / gemini / cohere (LC adapters) accept {"type":"image_url","image_url": {"url": "data:..."}}
+    # openai / google / cohere (LC adapters) accept {"type":"image_url","image_url": {"url": "data:..."}}
     return {"type": "image_url", "image_url": {"url": data_uri}}
 
 def _system_msg_if(system_text: Optional[str]) -> List[BaseMessage]:
     return [SystemMessage(content=system_text)] if system_text else []
 
 def _build_vision_human_message(
-    provider_type: str,       # e.g., "openai", "anthropic", "gemini", "cohere", "cerebras"
+    provider_type: str,       # e.g., "openai", "anthropic", "google", "cohere", "cerebras"
     prompt_text: Optional[str],
     mime: str,
     raw: bytes,
@@ -64,7 +64,7 @@ def _build_vision_human_message(
     """
     Create a provider-aware HumanMessage with multimodal content:
     - anthropic: use base64 image part
-    - openai/cerebras/deepseek(gpt-wire)/gemini/cohere: use image_url data URI
+    - openai/cerebras/deepseek(gpt-wire)/google/cohere: use image_url data URI
     """
     parts: List[dict] = []
     if prompt_text:

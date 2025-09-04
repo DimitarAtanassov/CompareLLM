@@ -70,7 +70,7 @@ def _extract_from_piece(piece: Any) -> str:
         t = piece.get("text")
         if isinstance(t, str):
             return t
-        # anthropic/gemini style
+        # anthropic/google style
         if piece.get("type") == "text" and isinstance(piece.get("text"), str):
             return piece["text"]
     return ""
