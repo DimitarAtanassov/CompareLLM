@@ -854,6 +854,7 @@ export default function CompareLLMClient(): JSX.Element {
           embedding_models: selectedEmbeddingModels.map((s) => s.trim()),
           query: compareQuery.trim(),
           k: topKCompare,
+          with_scores: true
         }),
       });
 
