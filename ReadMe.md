@@ -175,7 +175,13 @@ MIT
 
 ## 👀 Screenshots
 
-See `/screenshots` for UI examples: chat, embeddings, image, and comparison views.
+| Chat Completion | Prompt Input | Side-by-Side Embeddings |
+|---|---|---|
+| ![Chat Completion](screenshots/completion.png) | ![Prompt Input](screenshots/prompt_in.png) | ![Side-by-Side Embeddings](screenshots/side_by_side_embed.png) |
+
+| Single Embed Search | Single Model Interaction |
+|---|---|
+| ![Single Embed Search](screenshots/single_embed_search.png) | ![Single Model Interaction](screenshots/singleModelInteraction.png) |
 
 ---
 
