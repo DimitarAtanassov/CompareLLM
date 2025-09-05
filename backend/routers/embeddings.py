@@ -2,8 +2,9 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from time import perf_counter
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
+from services.embedding_service import EmbeddingService
 from langchain_core.documents import Document
 
 router = APIRouter(prefix="/embeddings", tags=["embeddings"])
@@ -51,65 +52,50 @@ class CompareIn(BaseModel):
     lambda_mult: Optional[float] = Field(default=0.5, ge=0.0, le=1.0)
     score_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
 
+def get_embedding_service(request: Request) -> EmbeddingService:
+    return request.app.state.embedding_service
+
 @router.get("/models")
-def list_embedding_models(request: Request):
-    svc = request.app.state.embedding_service
-    models = svc.list_embedding_models()
+def list_embedding_models(service: EmbeddingService = Depends(get_embedding_service)):
+    models = service.list_embedding_models()
     _log(f"GET /models -> {len(models)} models")
     return {"embedding_models": models}
 
 @router.get("/stores")
-def list_stores(request: Request):
-    svc = request.app.state.embedding_service
-    stores = svc.list_stores()
+def list_stores(service: EmbeddingService = Depends(get_embedding_service)):
+    stores = service.list_stores()
     _log(f"GET /stores -> {len(stores)} stores")
     return {"stores": stores}
 
 @router.post("/stores")
-def create_store(payload: CreateStoreIn, request: Request):
+def create_store(payload: CreateStoreIn, service: EmbeddingService = Depends(get_embedding_service)):
     _log(f"POST /stores -> store_id='{payload.store_id}', embedding_key='{payload.embedding_key}'")
-    svc = request.app.state.embedding_service
-    try:
-        svc.create_store(payload.store_id, payload.embedding_key)
-        return {"ok": True}
-    except (KeyError, ValueError) as e:
-        _log(f"POST /stores ERROR -> {type(e).__name__}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+    service.create_store(payload.store_id, payload.embedding_key)
+    return {"ok": True}
 
 @router.delete("/stores/{store_id}")
-def delete_store(store_id: str, request: Request):
+def delete_store(store_id: str, service: EmbeddingService = Depends(get_embedding_service)):
     _log(f"DELETE /stores/{store_id}")
-    svc = request.app.state.embedding_service
-    svc.delete_store(store_id)
+    service.delete_store(store_id)
     return {"ok": True}
 
 @router.post("/index/texts")
-async def index_texts(payload: IndexTextsIn, request: Request):
+async def index_texts(payload: IndexTextsIn, service: EmbeddingService = Depends(get_embedding_service)):
     _log(f"POST /index/texts -> store='{payload.store_id}', n_texts={len(payload.texts)}")
-    svc = request.app.state.embedding_service
-    try:
-        ids = await svc.aadd_texts(payload.store_id, payload.texts, payload.metadatas, payload.ids)
-        _log(f"POST /index/texts -> indexed {len(ids)} ids")
-        return {"ok": True, "ids": ids}
-    except KeyError as e:
-        _log(f"POST /index/texts ERROR -> {e}")
-        raise HTTPException(status_code=404, detail=str(e))
+    ids = await service.index_texts(payload.store_id, payload.texts, payload.metadatas, payload.ids)
+    _log(f"POST /index/texts -> indexed {len(ids)} ids")
+    return {"ok": True, "ids": ids}
 
 @router.post("/index/docs")
-async def index_docs(payload: IndexDocsIn, request: Request):
+async def index_docs(payload: IndexDocsIn, service: EmbeddingService = Depends(get_embedding_service)):
     _log(f"POST /index/docs -> store='{payload.store_id}', n_docs={len(payload.docs)}")
-    svc = request.app.state.embedding_service
     docs = [Document(page_content=d["page_content"], metadata=d.get("metadata") or {}) for d in payload.docs]
-    try:
-        ids = await svc.aadd_documents(payload.store_id, docs)
-        _log(f"POST /index/docs -> indexed {len(ids)} ids")
-        return {"ok": True, "ids": ids}
-    except KeyError as e:
-        _log(f"POST /index/docs ERROR -> {e}")
-        raise HTTPException(status_code=404, detail=str(e))
+    ids = await service.index_docs(payload.store_id, docs)
+    _log(f"POST /index/docs -> indexed {len(ids)} ids")
+    return {"ok": True, "ids": ids}
 
 @router.post("/query")
-async def query(payload: QueryIn, request: Request):
+async def query(payload: QueryIn, service: EmbeddingService = Depends(get_embedding_service)):
     """
     - similarity: fast cosine top-K
     - mmr / similarity_score_threshold: retriever with optional post-scoring
@@ -119,18 +105,12 @@ async def query(payload: QueryIn, request: Request):
     _log(f"POST /query -> store='{payload.store_id}', type='{stype}', k={payload.k}, with_scores={payload.with_scores}")
 
     if stype == "similarity":
-        svc = request.app.state.embedding_service
-        try:
-            results = await svc.asimilarity_search(
-                payload.store_id,
-                payload.query,
-                k=payload.k,
-                with_scores=payload.with_scores
-            )
-        except KeyError as e:
-            _log(f"/query similarity ERROR -> {e}")
-            raise HTTPException(status_code=404, detail=str(e))
-
+        results = await service.similarity_search(
+            payload.store_id,
+            payload.query,
+            k=payload.k,
+            with_scores=payload.with_scores
+        )
         out = []
         if payload.with_scores:
             for doc, score in results:
@@ -186,24 +166,11 @@ async def query(payload: QueryIn, request: Request):
     return {"matches": out}
 
 @router.post("/compare")
-async def compare_across_models(payload: CompareIn, request: Request):
-    """
-    Compare multiple embedding models **on a single dataset** using a LangGraph.
-    """
-    from graphs.factory import build_embedding_comparison_graph
-    import uuid
-
-    emb_reg = request.app.state.embedding_registry
-    
-    # 1. Build the graph
-    graph, checkpointer = build_embedding_comparison_graph(
-        registry=emb_reg,
-        embedding_keys=payload.embedding_models,
-        dataset_id=payload.dataset_id,
-        memory_backend=request.app.state.graph_memory,
-    )
-
-    # 2. Prepare search parameters from payload
+async def compare_across_models(
+    payload: CompareIn,
+    service: EmbeddingService = Depends(get_embedding_service),
+    request: Request = None,
+):
     search_params = {
         "k": payload.k,
         "with_scores": payload.with_scores,
@@ -212,32 +179,11 @@ async def compare_across_models(payload: CompareIn, request: Request):
         "lambda_mult": payload.lambda_mult,
         "score_threshold": payload.score_threshold,
     }
-
-    # 3. Invoke the graph
-    thread_id = str(uuid.uuid4())
-    final_state = await graph.ainvoke(
-        {
-            "query": payload.query,
-            "targets": payload.embedding_models,
-            "search_params": search_params,
-        },
-        config={"configurable": {"thread_id": thread_id}},
+    memory_backend = request.app.state.graph_memory if request else None
+    return await service.compare_across_models(
+        dataset_id=payload.dataset_id,
+        embedding_models=payload.embedding_models,
+        query=payload.query,
+        search_params=search_params,
+        memory_backend=memory_backend,
     )
-
-    # 4. Format results
-    results = final_state.get("results", {})
-    errors = final_state.get("errors", {})
-    
-    # Merge errors into the results dict for the response
-    for emb_key, err_msg in errors.items():
-        if emb_key not in results:
-            results[emb_key] = {"items": [], "error": err_msg}
-        else:
-            results[emb_key]["error"] = err_msg
-
-    return {
-        "query": payload.query,
-        "dataset_id": payload.dataset_id,
-        "k": payload.k,
-        "results": results,
-    }

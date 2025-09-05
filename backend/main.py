@@ -12,7 +12,7 @@ from routers import embeddings
 from core.dataset_catalog import DatasetCatalog
 from core.embedding_factory import build_embedding_model
 from core.embedding_registry import EmbeddingRegistry
-from services.embedding_services import EmbeddingService
+from services.embedding_service import EmbeddingService
 from core.config_loader import load_config
 from core.model_registry import ModelRegistry
 from core.model_factory import build_chat_model
