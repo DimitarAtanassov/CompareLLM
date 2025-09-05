@@ -9,11 +9,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_cohere import ChatCohere
 from langchain_cerebras import ChatCerebras
+from langchain_deepseek import ChatDeepSeek
 
-try:
-    from langchain_deepseek import ChatDeepSeek  # type: ignore
-except Exception:
-    ChatDeepSeek = None  # pragma: no cover
 
 
 def _env_val(name: str | None) -> str | None:

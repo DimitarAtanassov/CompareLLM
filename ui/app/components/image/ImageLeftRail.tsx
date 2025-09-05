@@ -9,18 +9,13 @@ import { PROVIDER_TEXT_COLOR } from "@/app/lib/colors";
 export type ImageEndpoint = { id: string; label: string; path: string; help?: string };
 
 type Props = {
-  // NEW: model picker
+  // Model picker
   allVisionModels: string[];
   selectedVisionModels: string[];
   toggleVisionModel: (m: string) => void;
   selectAllVision: () => void;
   clearAllVision: () => void;
   getProviderType: (model: string) => ProviderBrand;
-
-  // Endpoint picker
-  endpoints: ImageEndpoint[];
-  selectedEndpointId: string;
-  setSelectedEndpointId: (id: string) => void;
 
   // Uploader
   imageFile: File | null;
@@ -47,10 +42,6 @@ export default function ImageLeftRail({
   clearAllVision,
   getProviderType,
 
-  endpoints,
-  selectedEndpointId,
-  setSelectedEndpointId,
-
   imageFile,
   setImageFile,
 
@@ -76,11 +67,6 @@ export default function ImageLeftRail({
     setPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [imageFile]);
-
-  const selectedEndpoint = useMemo(
-    () => endpoints.find((e) => e.id === selectedEndpointId) || endpoints[0],
-    [endpoints, selectedEndpointId]
-  );
 
   // Resizable model list (like Embeddings)
   const MIN_H = 140;
@@ -177,25 +163,6 @@ export default function ImageLeftRail({
             <div className="absolute left-1/2 -translate-x-1/2 top-0.5 h-2 w-16 rounded-full bg-zinc-300 dark:bg-zinc-700" />
           </div>
         </div>
-      </div>
-
-      {/* Endpoint picker */}
-      <div className="space-y-1">
-        <label className="text-sm font-medium">Endpoint</label>
-        <select
-          className="w-full rounded-md border border-zinc-200 dark:border-zinc-800 p-2 bg-white dark:bg-zinc-900 text-sm"
-          value={selectedEndpointId}
-          onChange={(e) => setSelectedEndpointId(e.target.value)}
-        >
-          {endpoints.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.label}
-            </option>
-          ))}
-        </select>
-        {selectedEndpoint?.help && (
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">{selectedEndpoint.help}</p>
-        )}
       </div>
 
       {/* Uploader */}

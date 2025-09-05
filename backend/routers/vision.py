@@ -250,7 +250,7 @@ async def _ainvoke_with_retries(llm, msgs, *, max_retries: int = 3, base_delay: 
     raise HTTPException(status_code=500, detail="Unknown error during model invocation")
 
 # =============================================================================
-# JSON endpoints for the frontend ("analyze", "transform")
+# JSON endpoints for the frontend ("analyze")
 # =============================================================================
 
 @router.post("/analyze")
@@ -300,62 +300,6 @@ async def analyze_image(
     text = _extract_text_from_output(out)
     img_b64, img_mime, img_url = _extract_image_from_output(out)
 
-    return {
-        "text": text or None,
-        "json": None,
-        "image_base64": img_b64,
-        "image_mime": img_mime,
-        "image_url": img_url,
-        "model": model_name,
-        "provider": pkey,
-    }
-
-@router.post("/transform")
-async def transform_image(
-    request: Request,
-    file: UploadFile = File(None),
-    image: UploadFile = File(None),                 # backward compat
-    prompt: Optional[str] = Form(None),
-    model: Optional[str] = Form(None),
-    provider: Optional[str] = Form(None),
-    wire: Optional[str] = Form(None),               # "provider:model"
-    system: Optional[str] = Form(None),
-    model_params: Optional[str] = Form(None),       # JSON string; may include tool flags vendor-specific
-):
-    up = _choose_upload(image=image, file_=file)
-    if not up.content_type or not _is_png_or_jpeg(up.content_type):
-        raise HTTPException(400, "Only image/png and image/jpeg are supported")
-    raw = await up.read()
-    if not raw:
-        raise HTTPException(400, "Empty image upload")
-
-    if not wire or ":" not in wire:
-        raise HTTPException(400, "Missing 'wire' (format: 'provider:model')")
-
-    reg = _registry(request)
-    pkey, model_name, ptype = _provider_type_from_wire(reg, wire)
-
-    # Build messages (same as analyze; "transform" semantics up to the model/prompt)
-    msgs: List[BaseMessage] = []
-    msgs.extend(_system_msg_if(system))
-    msgs.append(_build_vision_human_message(ptype, prompt, up.content_type, raw))
-
-    kwargs = {}
-    if model_params:
-        try:
-            kwargs = json.loads(model_params)
-            if not isinstance(kwargs, dict):
-                raise ValueError
-        except Exception:
-            raise HTTPException(400, "model_params must be valid JSON object")
-
-    llm = resolve_and_init_from_registry(registry=reg, wire=wire, params=kwargs)
-    out = await _ainvoke_with_retries(llm, msgs, max_retries=3, base_delay=0.6)
-
-    text = _extract_text_from_output(out)
-    img_b64, img_mime, img_url = _extract_image_from_output(out)
-
-    # If we didn't get image content back, still return text so the UI can show it
     return {
         "text": text or None,
         "json": None,

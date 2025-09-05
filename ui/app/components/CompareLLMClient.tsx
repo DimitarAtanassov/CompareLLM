@@ -508,7 +508,6 @@ export default function CompareLLMClient(): JSX.Element {
   const IMAGE_ENDPOINTS: ImageEndpoint[] = [
     // Adjust to your actual backend routes/names
     { id: "analyze",   label: "Analyze Image",     path: "/vision/analyze",   help: "Sends image + optional prompt and returns JSON/text." },
-    { id: "transform", label: "Transform/Generate", path: "/vision/transform", help: "Returns a processed image and/or JSON/text." },
   ];
 
   const [imageEndpointId, setImageEndpointId] = useState<string>(IMAGE_ENDPOINTS[0].id);
@@ -910,7 +909,8 @@ export default function CompareLLMClient(): JSX.Element {
     // prime per-model outputs
     setImageOutputs(Object.fromEntries(selectedVisionModels.map((m) => [m, { response: null, error: null }])));
 
-    const endpoint = IMAGE_ENDPOINTS.find((e) => e.id === imageEndpointId) || IMAGE_ENDPOINTS[0];
+    // Only one endpoint, so no need to select
+    const endpoint = IMAGE_ENDPOINTS[0];
     const url = `${API_BASE}${endpoint.path}`;
 
     await Promise.allSettled(
@@ -960,7 +960,7 @@ export default function CompareLLMClient(): JSX.Element {
     );
 
     setIsProcessingImage(false);
-  }, [API_BASE, imageEndpointId, imageFile, imagePrompt, selectedVisionModels, getProviderKey]);
+  }, [API_BASE, imageFile, imagePrompt, selectedVisionModels, getProviderKey]);
 
 
   const clearImageInputs = useCallback(() => {
@@ -1758,9 +1758,6 @@ export default function CompareLLMClient(): JSX.Element {
             getProviderType={getProviderType}
 
             // Endpoint/prompt/uploader
-            endpoints={IMAGE_ENDPOINTS}
-            selectedEndpointId={imageEndpointId}
-            setSelectedEndpointId={setImageEndpointId}
             imageFile={imageFile}
             setImageFile={setImageFile}
             prompt={imagePrompt}
