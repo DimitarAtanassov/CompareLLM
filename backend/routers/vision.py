@@ -1,17 +1,14 @@
 # routers/vision.py
 from __future__ import annotations
 import asyncio
-import base64
 import json
-import random
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request, Depends
 from fastapi.responses import StreamingResponse
 
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage
+from services.vision_service import VisionService
 from graphs.factory import build_single_model_graph, build_multi_model_graph
-from core.model_factory import resolve_and_init_from_registry
 
 router = APIRouter(prefix="/vision", tags=["vision"])
 
@@ -27,227 +24,11 @@ def _sse_event(data: Dict[str, Any], event: Optional[str] = None) -> bytes:
 def _sse_comment(comment: str = "") -> bytes:
     return (f":{comment}\n\n").encode("utf-8")
 
-STREAM_HEADERS = {
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
+STREAM_HEADERS = VisionService.STREAM_HEADERS
 
-# ---- Message/content helpers ----
-def _is_png_or_jpeg(mime: str) -> bool:
-    m = (mime or "").lower()
-    return m in ("image/png", "image/jpeg", "image/jpg")
-
-def _b64(s: bytes) -> str:
-    return base64.b64encode(s).decode("ascii")
-
-def _b64_data_uri(mime: str, b: bytes) -> str:
-    return f"data:{mime};base64,{_b64(b)}"
-
-def _anthropic_part(mime: str, b: bytes) -> dict:
-    # anthropic expects {"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}}
-    return {"type": "image", "source": {"type": "base64", "media_type": mime, "data": _b64(b)}}
-
-def _image_url_part(data_uri: str) -> dict:
-    # openai / google / cohere (LC adapters) accept {"type":"image_url","image_url": {"url": "data:..."}}
-    return {"type": "image_url", "image_url": {"url": data_uri}}
-
-def _system_msg_if(system_text: Optional[str]) -> List[BaseMessage]:
-    return [SystemMessage(content=system_text)] if system_text else []
-
-def _build_vision_human_message(
-    provider_type: str,       # e.g., "openai", "anthropic", "google", "cohere", "cerebras"
-    prompt_text: Optional[str],
-    mime: str,
-    raw: bytes,
-) -> HumanMessage:
-    """
-    Create a provider-aware HumanMessage with multimodal content:
-    - anthropic: use base64 image part
-    - openai/cerebras/deepseek(gpt-wire)/google/cohere: use image_url data URI
-    """
-    parts: List[dict] = []
-    if prompt_text:
-        parts.append({"type": "text", "text": prompt_text})
-
-    ptype = (provider_type or "").lower()
-    if ptype == "anthropic":
-        parts.append(_anthropic_part(mime, raw))
-    else:
-        parts.append(_image_url_part(_b64_data_uri(mime, raw)))
-
-    return HumanMessage(content=parts)
-
-# --- registry + provider helpers
-def _registry(request: Request):
-    reg = getattr(request.app.state, "registry", None)
-    if reg is None:
-        raise HTTPException(500, "Model registry not initialized")
-    return reg
-
-def _memory_backend(request: Request):
-    return getattr(request.app.state, "graph_memory", None)
-
-def _provider_type_from_wire(reg, wire: str) -> Tuple[str, str, str]:
-    """Return (provider_key, model_name, provider_type) from 'prov:model'."""
-    try:
-        pkey, model_name = wire.split(":", 1)
-    except ValueError:
-        raise HTTPException(400, "wire must be 'provider:model'")
-    ptype = (reg.provider_type(pkey) or "").lower()
-    return pkey, model_name, ptype
-
-def _choose_upload(image: Optional[UploadFile], file_: Optional[UploadFile]) -> UploadFile:
-    if file_ is not None:
-        return file_
-    if image is not None:
-        return image
-    raise HTTPException(400, "Missing file upload: expected form field 'file'")
-
-# ---- Output extraction helpers ----
-def _extract_text_from_output(output: Any) -> str:
-    # Handles AIMessage / BaseMessage / simple strings
-    if isinstance(output, AIMessage):
-        c = output.content
-        if isinstance(c, str):
-            return c
-        # LC can return list parts; extract any text parts if present
-        if isinstance(c, list):
-            buf: List[str] = []
-            for part in c:
-                if isinstance(part, dict):
-                    if part.get("type") in ("text", "raw"):
-                        t = part.get("text") or part.get("value") or ""
-                        if isinstance(t, str):
-                            buf.append(t)
-            if buf:
-                return "".join(buf)
-        # Fallback to .text attr if adapter exposes it
-        t = getattr(output, "text", None)
-        if isinstance(t, str):
-            return t
-        return ""
-    # LangChain sometimes returns a dict-like; try common fields
-    if isinstance(output, dict):
-        for k in ("text", "message", "content"):
-            v = output.get(k)
-            if isinstance(v, str):
-                return v
-    if isinstance(output, str):
-        return output
-    # Generic BaseMessage
-    if hasattr(output, "content") and isinstance(getattr(output, "content"), str):
-        return getattr(output, "content")
-    return ""
-
-def _extract_image_from_output(output: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """
-    Tries to find an image payload in common chat-model outputs.
-    Returns (image_base64, image_mime, image_url).
-    """
-    # Look inside AIMessage.content if it's a list of parts
-    parts: List[Any] = []
-    if isinstance(output, AIMessage):
-        if isinstance(output.content, list):
-            parts = output.content
-    elif isinstance(output, dict) and isinstance(output.get("content"), list):
-        parts = output["content"]  # type: ignore
-
-    # Common part shapes
-    for part in parts:
-        if not isinstance(part, dict):
-            continue
-        # OpenAI-ish image_url
-        if part.get("type") == "image_url":
-            url = (part.get("image_url") or {}).get("url")
-            if isinstance(url, str) and url:
-                return None, None, url
-        # Base64 image
-        if part.get("type") in ("image", "image_base64"):
-            src = part.get("source") or {}
-            data = src.get("data") or part.get("data")
-            mime = src.get("media_type") or part.get("mime") or "image/png"
-            if isinstance(data, str) and data:
-                # Could be already base64 or a data URI
-                if data.startswith("data:"):
-                    # data URI
-                    try:
-                        header, b64 = data.split(",", 1)
-                        mime_guess = header.split(";")[0].split(":", 1)[1] if ":" in header else "image/png"
-                        return b64, mime_guess, data
-                    except Exception:
-                        pass
-                return data, mime, None
-
-    # Some providers put base64 string in additional_kwargs
-    if isinstance(output, AIMessage):
-        ak = getattr(output, "additional_kwargs", {}) or {}
-        # Non-standard; check a few common keys
-        for key in ("image_base64", "image_b64", "image"):
-            val = ak.get(key)
-            if isinstance(val, str) and val:
-                return val, ak.get("image_mime") or "image/png", None
-
-    return None, None, None
-
-def _json_or_none(s: Optional[str]) -> Optional[Union[dict, list]]:
-    if not s:
-        return None
-    try:
-        val = json.loads(s)
-        if isinstance(val, (dict, list)):
-            return val
-    except Exception:
-        pass
-    return None
-
-# ---- Retry helpers (overload-aware) ----
-def _is_overload_error(err: Exception) -> bool:
-    """
-    Detect 'overloaded' / retryable capacity errors from vendors.
-    - Anthropic returns HTTP 529 'Overloaded'.
-    - Some SDKs wrap the response; we check common attributes + message text.
-    """
-    msg = (str(err) or "").lower()
-    if "overloaded" in msg or "status 529" in msg or "code: 529" in msg:
-        return True
-    status = getattr(err, "status_code", None) or getattr(getattr(err, "response", None), "status_code", None)
-    if status == 529:
-        return True
-    return False
-
-def _backoff_delay(attempt: int, base: float = 0.6, max_backoff: float = 6.0) -> float:
-    """
-    Exponential backoff with jitter:
-    attempt=0 -> ~base .. 2*base
-    attempt=1 -> ~2*base .. 4*base
-    """
-    low = base * (2 ** attempt)
-    high = base * (2 ** (attempt + 1))
-    return min(random.uniform(low, high), max_backoff)
-
-async def _ainvoke_with_retries(llm, msgs, *, max_retries: int = 3, base_delay: float = 0.6):
-    """
-    Invoke the model with limited retries on 'overloaded' errors.
-    Raises HTTPException with 503 on persistent overload, 502 on other errors.
-    """
-    last_err: Exception | None = None
-    for attempt in range(max_retries + 1):
-        try:
-            return await llm.ainvoke(msgs)
-        except Exception as e:
-            if _is_overload_error(e) and attempt < max_retries:
-                delay = _backoff_delay(attempt, base=base_delay)
-                await asyncio.sleep(delay)
-                continue
-            last_err = e
-            break
-
-    if last_err and _is_overload_error(last_err):
-        raise HTTPException(status_code=503, detail="Provider is overloaded. Please retry shortly.")
-    if last_err:
-        raise HTTPException(status_code=502, detail=str(last_err))
-    raise HTTPException(status_code=500, detail="Unknown error during model invocation")
+# Dependency injection for VisionService
+def get_vision_service() -> VisionService:
+    return VisionService()
 
 # =============================================================================
 # JSON endpoints for the frontend ("analyze")
@@ -257,33 +38,29 @@ async def _ainvoke_with_retries(llm, msgs, *, max_retries: int = 3, base_delay: 
 async def analyze_image(
     request: Request,
     file: UploadFile = File(None),
-    image: UploadFile = File(None),                 # backward compat (ignored if 'file' is present)
+    image: UploadFile = File(None),
     prompt: Optional[str] = Form(None),
-    model: Optional[str] = Form(None),              # informational only
-    provider: Optional[str] = Form(None),           # informational only
-    wire: Optional[str] = Form(None),               # preferred: "provider:model"
+    model: Optional[str] = Form(None),
+    provider: Optional[str] = Form(None),
+    wire: Optional[str] = Form(None),
     system: Optional[str] = Form(None),
-    model_params: Optional[str] = Form(None),       # JSON string
+    model_params: Optional[str] = Form(None),
+    vision_service: VisionService = Depends(get_vision_service),
 ):
-    up = _choose_upload(image=image, file_=file)
-    if not up.content_type or not _is_png_or_jpeg(up.content_type):
-        raise HTTPException(400, "Only image/png and image/jpeg are supported")
-    raw = await up.read()
-    if not raw:
-        raise HTTPException(400, "Empty image upload")
+    up = vision_service.choose_upload(image=image, file_=file)
+    vision_service.validate_upload(up)
+    raw = await vision_service.read_upload(up)
 
     if not wire or ":" not in wire:
         raise HTTPException(400, "Missing 'wire' (format: 'provider:model')")
 
-    reg = _registry(request)
-    pkey, model_name, ptype = _provider_type_from_wire(reg, wire)
+    reg = vision_service.get_registry(request)
+    pkey, model_name, ptype = vision_service.provider_type_from_wire(reg, wire)
 
-    # Build messages
-    msgs: List[BaseMessage] = []
-    msgs.extend(_system_msg_if(system))
-    msgs.append(_build_vision_human_message(ptype, prompt, up.content_type, raw))
+    msgs: List[Any] = []
+    msgs.extend(vision_service._system_msg_if(system))
+    msgs.append(vision_service._build_vision_human_message(ptype, prompt, up.content_type, raw))
 
-    # Params
     kwargs = {}
     if model_params:
         try:
@@ -293,12 +70,12 @@ async def analyze_image(
         except Exception:
             raise HTTPException(400, "model_params must be valid JSON object")
 
-    # Build a fresh model instance with params and invoke (with retries)
-    llm = resolve_and_init_from_registry(registry=reg, wire=wire, params=kwargs)
-    out = await _ainvoke_with_retries(llm, msgs, max_retries=3, base_delay=0.6)
+    # Use the service to resolve/init the model
+    llm = vision_service.resolve_and_init_model(reg, wire, kwargs)
+    out = await vision_service.ainvoke_with_retries(llm, msgs, max_retries=3, base_delay=0.6)
 
-    text = _extract_text_from_output(out)
-    img_b64, img_mime, img_url = _extract_image_from_output(out)
+    text = vision_service._extract_text_from_output(out)
+    img_b64, img_mime, img_url = vision_service._extract_image_from_output(out)
 
     return {
         "text": text or None,
@@ -317,30 +94,26 @@ async def analyze_image(
 @router.post("/single/stream")
 async def vision_single_stream(
     request: Request,
-    wire: str = Form(...),                       # "provider:model"
-    image: UploadFile = File(None),              # jpeg/png (legacy name)
-    file: UploadFile = File(None),               # jpeg/png (preferred)
-    prompt: Optional[str] = Form(None),          # optional user text
-    model_params: Optional[str] = Form(None),    # JSON string (per-model params)
-    system: Optional[str] = Form(None),          # optional system prompt
+    wire: str = Form(...),
+    image: UploadFile = File(None),
+    file: UploadFile = File(None),
+    prompt: Optional[str] = Form(None),
+    model_params: Optional[str] = Form(None),
+    system: Optional[str] = Form(None),
     thread_id: Optional[str] = Form("vision"),
+    vision_service: VisionService = Depends(get_vision_service),
 ):
-    up = _choose_upload(image=image, file_=file)
-    if not up.content_type or not _is_png_or_jpeg(up.content_type):
-        raise HTTPException(400, "Only image/png and image/jpeg are supported")
-    raw = await up.read()
-    if not raw:
-        raise HTTPException(400, "Empty image upload")
+    up = vision_service.choose_upload(image=image, file_=file)
+    vision_service.validate_upload(up)
+    raw = await vision_service.read_upload(up)
 
-    reg = _registry(request)
-    pkey, model_name, ptype = _provider_type_from_wire(reg, wire)
+    reg = vision_service.get_registry(request)
+    pkey, model_name, ptype = vision_service.provider_type_from_wire(reg, wire)
 
-    # Build messages
-    msgs: List[BaseMessage] = []
-    msgs.extend(_system_msg_if(system))
-    msgs.append(_build_vision_human_message(ptype, prompt, up.content_type, raw))
+    msgs: List[Any] = []
+    msgs.extend(vision_service._system_msg_if(system))
+    msgs.append(vision_service._build_vision_human_message(ptype, prompt, up.content_type, raw))
 
-    # Build graph with params
     params_dict: Dict[str, Any] = {}
     if model_params:
         try:
@@ -354,7 +127,7 @@ async def vision_single_stream(
         registry=reg,
         wire=wire,
         model_kwargs=params_dict,
-        memory_backend=_memory_backend(request),
+        memory_backend=vision_service.get_memory_backend(request),
     )
 
     async def gen():
@@ -409,20 +182,18 @@ async def vision_single_stream(
 @router.post("/multi/stream")
 async def vision_multi_stream(
     request: Request,
-    targets: str = Form(...),                   # JSON: ["prov:model", ...]
+    targets: str = Form(...),
     image: UploadFile = File(None),
     file: UploadFile = File(None),
     prompt: Optional[str] = Form(None),
-    per_model_params: Optional[str] = Form(None),  # JSON: { "prov:model": {...}, ... }
+    per_model_params: Optional[str] = Form(None),
     system: Optional[str] = Form(None),
     thread_id: Optional[str] = Form("vision-compare"),
+    vision_service: VisionService = Depends(get_vision_service),
 ):
-    up = _choose_upload(image=image, file_=file)
-    if not up.content_type or not _is_png_or_jpeg(up.content_type):
-        raise HTTPException(400, "Only image/png and image/jpeg are supported")
-    raw = await up.read()
-    if not raw:
-        raise HTTPException(400, "Empty image upload")
+    up = vision_service.choose_upload(image=image, file_=file)
+    vision_service.validate_upload(up)
+    raw = await vision_service.read_upload(up)
 
     try:
         target_list = json.loads(targets)
@@ -431,18 +202,17 @@ async def vision_multi_stream(
     except Exception:
         raise HTTPException(400, "targets must be JSON array of 'provider:model' strings")
 
-    pmap: Dict[str, str] = {}  # wire -> provider_type
-    reg = _registry(request)
+    pmap: Dict[str, str] = {}
+    reg = vision_service.get_registry(request)
     for w in target_list:
         pkey, _ = w.split(":", 1)
         pmap[w] = (reg.provider_type(pkey) or "").lower()
 
-    def msgs_for_wire(w: str) -> List[BaseMessage]:
-        content_msg = _build_vision_human_message(pmap[w], prompt, up.content_type, raw)
-        msgs = _system_msg_if(system) + [content_msg]
+    def msgs_for_wire(w: str) -> List[Any]:
+        content_msg = vision_service._build_vision_human_message(pmap[w], prompt, up.content_type, raw)
+        msgs = vision_service._system_msg_if(system) + [content_msg]
         return msgs
 
-    # Parse params
     per_params: Dict[str, Dict[str, Any]] = {}
     if per_model_params:
         try:
@@ -456,7 +226,7 @@ async def vision_multi_stream(
         registry=reg,
         wires=target_list,
         per_model_params=per_params,
-        memory_backend=_memory_backend(request),
+        memory_backend=vision_service.get_memory_backend(request),
     )
     node_to_wire = getattr(compiled, "_node_to_wire", {}) or {}
 
@@ -466,7 +236,7 @@ async def vision_multi_stream(
         cfg = {"configurable": {"thread_id": thread_id}}
 
         init_state = {
-            "messages": [],         # will be set below
+            "messages": [],
             "targets": target_list,
             "results": {},
             "errors": {},
@@ -475,8 +245,6 @@ async def vision_multi_stream(
         last_beat = asyncio.get_event_loop().time()
         streamed_any: Dict[str, bool] = {w: False for w in target_list}
 
-        # Use identical messages for all nodes (prompt + image). If you need per-wire variation,
-        # adapt your graph to accept per-node messages and call msgs_for_wire(w) at node execution.
         first_wire = target_list[0]
         init_state["messages"] = msgs_for_wire(first_wire)
 
@@ -526,7 +294,6 @@ async def vision_multi_stream(
                 if wire:
                     yield _sse_event({"type": "error", "scope": "multi", "model": wire, "node": node, "error": str(err) if err else "Unknown error", "done": False}, event="error")
 
-        # Ensure all models are marked done
         for w in target_list:
             yield _sse_event({"type": "done", "scope": "multi", "model": w, "done": True}, event="done")
 
