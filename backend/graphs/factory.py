@@ -333,4 +333,10 @@ def build_multi_model_graph(
 
     checkpointer = memory_backend or InMemorySaver()
     compiled = g.compile(checkpointer=checkpointer)
+
+    # Attach node<->wire mapping for router
+    node_to_wire = {v: k for k, v in wire_to_node.items()}
+    setattr(compiled, "_node_to_wire", node_to_wire)
+    setattr(compiled, "_wire_to_node", wire_to_node)
+
     return compiled, checkpointer

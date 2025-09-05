@@ -6,8 +6,8 @@ def merge_str_dict(old: Dict[str, str] | None, new: Dict[str, str] | None) -> Di
     if old is None:
         old = {}
     if new:
-        # overwrite per key (we send full-so-far strings)
-        old.update(new)
+        for k, v in new.items():
+            old[k] = old.get(k, "") + v
     return old
 
 class ChatMessage(TypedDict):
