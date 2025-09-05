@@ -9,7 +9,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_cohere import CohereEmbeddings
 from langchain_voyageai import VoyageAIEmbeddings
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 
 def _env_val(name: Optional[str]) -> Optional[str]:
     return os.getenv(name) if name else None

@@ -70,7 +70,7 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
         if pt == "google":
             out["max_output_tokens"] = mt
         elif pt == "ollama":
-            out["num_predict"] = mt
+            pass  # Will be handled in ollama-specific section below
         else:
             out["max_tokens"] = mt  # openai / anthropic / cohere / deepseek / cerebras
 
@@ -122,6 +122,18 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     for k in ("timeout", "max_retries"):
         if params.get(k) is not None:
             out[k] = params[k]
+
+    # Ollama-specific parameters
+    if pt == "ollama":
+        options = {}
+        if params.get("max_tokens") is not None:
+            options["num_predict"] = params["max_tokens"]
+        ollama_params = ["mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "repeat_penalty"]
+        for k in ollama_params:
+            if params.get(k) is not None:
+                options[k] = params[k]
+        if options:
+            out["options"] = options
 
     return out
 
@@ -178,7 +190,7 @@ def build_chat_model_with_params(
     elif ptype == "ollama":
         model_obj = ChatOllama(model=model_name, base_url=base_url, **norm)
 
-    elif ptype == "deepseek" and ChatDeepSeek is not None:
+    elif ptype == "deepseek":
         model_obj = ChatDeepSeek(model=model_name, api_key=api_key, **norm)
 
     else:

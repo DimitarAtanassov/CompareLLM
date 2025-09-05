@@ -13,6 +13,7 @@ from core.dataset_catalog import DatasetCatalog
 from core.embedding_factory import build_embedding_model
 from core.embedding_registry import EmbeddingRegistry
 from services.embedding_service import EmbeddingService
+from services.provider_service import ProviderService
 from core.config_loader import load_config
 from core.model_registry import ModelRegistry
 from core.model_factory import build_chat_model
@@ -96,6 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.embedding_registry = emb_reg
     app.state.embedding_service = EmbeddingService(emb_reg)
     app.state.dataset_catalog = DatasetCatalog()
+    app.state.provider_service = ProviderService(cfg)
     _log(f"Initialized embeddings -> {emb_count} embedding model(s) available")
 
     try:
