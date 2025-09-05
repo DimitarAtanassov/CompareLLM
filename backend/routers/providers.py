@@ -2,10 +2,11 @@
 from __future__ import annotations
 from typing import List, Optional, Dict, Any, Tuple
 import re
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request, Depends
 from pydantic import BaseModel
 
 from core.config_loader import load_config
+from services.provider_service import ProviderService
 
 router = APIRouter(prefix="/providers", tags=["providers"])
 
@@ -194,113 +195,30 @@ def _is_vision_model(provider_type: str, model_name: str, meta: Dict[str, Any], 
 
 # ---------------------- Existing endpoints ----------------------
 
-@router.get("", response_model=Dict[str, List[ProviderOut]])
-def list_providers(request: Request):
+def get_provider_service(request: Request) -> ProviderService:
+    # Use app state config if available for consistency
     cfg = getattr(request.app.state, "config", None)
-    providers_cfg = (cfg or {}).get("providers", {})
+    return ProviderService(config=cfg)
 
-    out: List[ProviderOut] = []
-    for key, p in providers_cfg.items():
-        name = p.get("name") or key
-        type_ = p.get("type") or "unknown"
-        base_url = p.get("base_url") or ""
 
-        # Normalize: prefer "models", fallback to "chat_models" or "llm_models"
-        raw_models = p.get("models") or p.get("chat_models") or p.get("llm_models") or []
-        # Keep string names for compatibility
-        models: List[str] = []
-        for entry in raw_models:
-            mname, _meta = _normalize_model_entry(entry)
-            models.append(mname)
-
-        embed = p.get("embedding_models") or []
-        wire = p.get("wire")
-        auth_required = bool(
-            p.get("auth_required") is True
-            or p.get("requires_api_key") is True
-            or p.get("api_key_env")
-        )
-
-        out.append(
-            ProviderOut(
-                name=name,
-                type=type_,
-                base_url=base_url,
-                models=models,
-                embedding_models=embed,
-                auth_required=auth_required,
-                wire=wire,
-            )
-        )
-
+@router.get("", response_model=Dict[str, List[ProviderOut]])
+def list_providers(request: Request, provider_service: ProviderService = Depends(get_provider_service)):
+    out = [ProviderOut(**p) for p in provider_service.list_providers()]
     return {"providers": out}
 
 
 @router.post("/reload")
-def reload_providers():
-    cfg = load_config(force_reload=True)
-    return {"status": "ok", "providers_count": len((cfg.get("providers") or {}))}
+def reload_providers(provider_service: ProviderService = Depends(get_provider_service)):
+    return provider_service.reload_providers()
 
-
-# ---------------------- NEW: vision-only models ----------------------
 
 class VisionProvidersOut(BaseModel):
     providers: List[ProviderOut]
 
 
 @router.get("/vision", response_model=VisionProvidersOut)
-def list_vision_providers(request: Request) -> VisionProvidersOut:
-    """
-    Returns the same shape as /providers, but with provider.models filtered
-    down to only image-capable models. Detection uses:
-      - explicit flags in models.yaml entries (vision/supports_vision/modalities)
-      - optional provider-level vision_model_patterns (regex list)
-      - built-in heuristics for OpenAI/Gemini (+ Anthropic short-circuit)
-      - optional env VISION_MODEL_REGEX (comma-separated regexes)
-      - optional provider-level 'vision_all_models: true'
-    """
-    cfg = getattr(request.app.state, "config", None)
-    providers_cfg: Dict[str, Any] = (cfg or {}).get("providers", {})  # key -> dict
-
-    out: List[ProviderOut] = []
-    for key, p in providers_cfg.items():
-        name = p.get("name") or key
-        type_ = p.get("type") or "unknown"
-        base_url = p.get("base_url") or ""
-        wire = p.get("wire")
-
-        # Accept string/dict model entries
-        raw_models = p.get("models") or p.get("chat_models") or p.get("llm_models") or []
-        vision_models: List[str] = []
-        for entry in raw_models:
-            mname, meta = _normalize_model_entry(entry)
-            if _is_vision_model(type_, mname, meta, p):
-                vision_models.append(mname)
-
-        # Only include providers that have at least one vision-capable model
-        if not vision_models:
-            continue
-
-        auth_required = bool(
-            p.get("auth_required") is True
-            or p.get("requires_api_key") is True
-            or p.get("api_key_env")
-        )
-
-        embed = p.get("embedding_models") or []
-
-        out.append(
-            ProviderOut(
-                name=name,
-                type=type_,
-                base_url=base_url,
-                models=sorted(set(vision_models)),
-                embedding_models=embed,  # unchanged; filter if needed in future
-                auth_required=auth_required,
-                wire=wire,
-            )
-        )
-
+def list_vision_providers(request: Request, provider_service: ProviderService = Depends(get_provider_service)) -> VisionProvidersOut:
+    out = [ProviderOut(**p) for p in provider_service.list_vision_providers()]
     return VisionProvidersOut(providers=out)
 
 
@@ -308,24 +226,6 @@ def list_vision_providers(request: Request) -> VisionProvidersOut:
 def get_provider(
     key: str,
     include_secrets: bool = Query(False, description="Include api_key_env in response"),
+    provider_service: ProviderService = Depends(get_provider_service),
 ):
-    cfg = load_config()
-    pdata = (cfg.get("providers") or {}).get(key)
-
-    if not pdata:
-        raise HTTPException(status_code=404, detail=f"Provider '{key}' not found")
-
-    item = {
-        "key": key,
-        "type": pdata.get("type"),
-        "wire": pdata.get("wire"),
-        "base_url": pdata.get("base_url"),
-        "headers": pdata.get("headers") or {},
-        "models": pdata.get("models") or [],
-        "embedding_models": pdata.get("embedding_models") or [],
-        "requires_api_key": bool(pdata.get("api_key_env")),
-    }
-    if include_secrets:
-        item["api_key_env"] = pdata.get("api_key_env")
-
-    return item
+    return provider_service.get_provider(key, include_secrets=include_secrets)
