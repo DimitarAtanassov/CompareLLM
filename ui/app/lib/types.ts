@@ -93,6 +93,7 @@ export type ModelChat = {
 export type EnhancedChatRequest = {
   messages: { role: string; content: string }[];
   models: string[];
+  system?: string; // Optional system message for all models
   temperature?: number;
   max_tokens?: number;
   min_tokens?: number;

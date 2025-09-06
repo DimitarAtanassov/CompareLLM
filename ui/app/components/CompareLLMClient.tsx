@@ -430,6 +430,7 @@ export default function CompareLLMClient(): JSX.Element {
   const [activeTab, setActiveTab] = useState<"chat" | "embedding" | "image">("chat");
   const [embedView, setEmbedView] = useState<"single" | "compare">("single");
   const [loadingProviders, setLoadingProviders] = useState(false);
+  const [systemMessage, setSystemMessage] = useState<string>("");
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [allModels, setAllModels] = useState<string[]>([]);
 
@@ -1266,6 +1267,7 @@ export default function CompareLLMClient(): JSX.Element {
         },
         body: JSON.stringify({
           ...body,
+          system: systemMessage || undefined, // <-- add system message if present
           thread_id: threadId, // shared thread id so single+multi share memory
         }),
         signal: controller.signal,
@@ -1458,220 +1460,234 @@ export default function CompareLLMClient(): JSX.Element {
       {activeTab === "chat" && (
         <main className="grid grid-cols-1 xl:grid-cols-[400px_1fr] gap-6 items-start">
           <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
-            {/* Prompt */}
-            <div className="space-y-4">
-              <label className="text-sm font-medium">Prompt</label>
+            {/* System Message (moved back above model selection) */}
+            <div className="mb-4">
+              <label className="block text-sm font-medium mb-1">System Message (optional)</label>
               <textarea
-                ref={promptRef}
-                className="w-full h-48 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 leading-relaxed"
-                placeholder="Paste or write a long prompt here..."
-                value={prompt}
-                onChange={(evt) => setPrompt(evt.target.value)}
-                spellCheck={true}
+                value={systemMessage}
+                onChange={e => setSystemMessage(e.target.value)}
+                placeholder="Set a system message for all models (e.g. 'You are a helpful assistant.')"
+                className="w-full rounded border border-zinc-300 dark:border-zinc-700 p-2 text-sm bg-white dark:bg-zinc-900"
+                rows={2}
               />
-
-              {/* Model list header */}
-              <div className="flex items-center justify-between">
-                <label className="text-sm font-medium">Models</label>
-                <div className="flex gap-2 text-xs">
-                  <button
-                    onClick={() => setSelected(allModels)}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Select all
-                  </button>
-                  <button
-                    onClick={() => setSelected([])}
-                    className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
-                  >
-                    Clear
-                  </button>
-                </div>
+            </div>
+            {/* Model list header */}
+            <div className="flex items-center justify-between">
+              <label className="text-sm font-medium">Models</label>
+              <div className="flex gap-2 text-xs">
+                <button
+                  onClick={() => setSelected(allModels)}
+                  className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
+                >
+                  Select all
+                </button>
+                <button
+                  onClick={() => setSelected([])}
+                  className="px-2 py-1 rounded-lg border border-orange-200 text-zinc-800 dark:text-zinc-100 bg-orange-50 hover:bg-orange-100 dark:bg-orange-400/10 dark:hover:bg-orange-400/20 transition"
+                >
+                  Clear
+                </button>
               </div>
+            </div>
 
-              {/* Resizable ModelList */}
-              <ModelList
-                models={allModels}
-                selected={selected}
-                onToggle={(m) => setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
-                brandOf={getProviderType}
-                initialHeightPx={260}
-                minHeightPx={140}
-                maxHeightPx={520}
-              />
+            {/* Resizable ModelList */}
+            <ModelList
+              models={allModels}
+              selected={selected}
+              onToggle={(m) => setSelected((prev) => (prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]))}
+              brandOf={getProviderType}
+              initialHeightPx={260}
+              minHeightPx={140}
+              maxHeightPx={520}
+            />
 
-              {/* Global defaults */}
-              <div className="space-y-3 text-sm">
-                <div>
-                  <label className="block mb-1 font-medium">Global temp</label>
-                  <input
-                    type="number"
-                    step={0.1}
-                    min={0}
-                    max={2}
-                    value={globalTemp ?? ""}
-                    placeholder="Model default"
-                    onChange={(e) => setGlobalTemp(e.target.value ? Number(e.target.value) : undefined)}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 font-medium">Global max_tokens</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={globalMax ?? ""}
-                    placeholder="Model default"
-                    onChange={(e) => setGlobalMax(e.target.value ? Number(e.target.value) : undefined)}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
-                <div>
-                  <label className="block mb-1 font-medium">Global min_tokens</label>
-                  <input
-                    type="number"
-                    min={1}
-                    value={globalMin ?? ""}
-                    placeholder="optional"
-                    onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
-                    className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
-                  />
-                </div>
+            {/* Global defaults */}
+            <div className="space-y-3 text-sm">
+              <div>
+                <label className="block mb-1 font-medium">Global temp</label>
+                <input
+                  type="number"
+                  step={0.1}
+                  min={0}
+                  max={2}
+                  value={globalTemp ?? ""}
+                  placeholder="Model default"
+                  onChange={(e) => setGlobalTemp(e.target.value ? Number(e.target.value) : undefined)}
+                  className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
+                />
               </div>
+              <div>
+                <label className="block mb-1 font-medium">Global max_tokens</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={globalMax ?? ""}
+                  placeholder="Model default"
+                  onChange={(e) => setGlobalMax(e.target.value ? Number(e.target.value) : undefined)}
+                  className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
+                />
+              </div>
+              <div>
+                <label className="block mb-1 font-medium">Global min_tokens</label>
+                <input
+                  type="number"
+                  min={1}
+                  value={globalMin ?? ""}
+                  placeholder="optional"
+                  onChange={(e) => setGlobalMin(e.target.value ? Number(e.target.value) : undefined)}
+                  className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900"
+                />
+              </div>
+            </div>
 
-              {/* Per-model parameters */}
-              <div className="space-y-2">
-                <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
-                {selected.length === 0 && (
-                  <div className="text-sm text-zinc-500 dark:text-zinc-400">Select one or more models above to configure their parameters.</div>
-                )}
-                {selected.map((m) => {
-                  const brand = getProviderType(m);
-                  const provKey = getProviderKey(m);
-                  const wire: ProviderWire = uiWireForProviderKey(provKey);
-                  const isExpanded = expandedModels.has(m);
-                  const hasParams = modelParams[m] && Object.keys(modelParams[m]).length > 0;
+            {/* Per-model parameters */}
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium">Model-Specific Parameters</h3>
+              {selected.length === 0 && (
+                <div className="text-sm text-zinc-500 dark:text-zinc-400">Select one or more models above to configure their parameters.</div>
+              )}
+              {selected.map((m) => {
+                const brand = getProviderType(m);
+                const provKey = getProviderKey(m);
+                const wire: ProviderWire = uiWireForProviderKey(provKey);
+                const isExpanded = expandedModels.has(m);
+                const hasParams = modelParams[m] && Object.keys(modelParams[m]).length > 0;
 
-                  return (
-                    <div key={m} className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5">
-                      <div
-                        className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
-                        onClick={() =>
-                          setExpandedModels((prev) => {
-                            const next = new Set(prev);
-                            next.has(m) ? next.delete(m) : next.add(m);
-                            return next;
-                          })
-                        }
-                        title={`Configure ${m}`}
-                      >
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-mono text-sm truncate">{m}</span>
-                          {hasParams && (
-                            <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200">
-                              configured
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_BADGE_BG[brand]}`}>{brand}</span>
-                          <svg className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                          </svg>
-                        </div>
+                return (
+                  <div key={m} className="rounded-lg border border-orange-200 dark:border-orange-500/40 bg-orange-50/30 dark:bg-orange-400/5">
+                    <div
+                      className="p-3 cursor-pointer flex items-center justify-between hover:bg-orange-50 dark:hover:bg-orange-400/10 rounded-lg transition"
+                      onClick={() =>
+                        setExpandedModels((prev) => {
+                          const next = new Set(prev);
+                          next.has(m) ? next.delete(m) : next.add(m);
+                          return next;
+                        })
+                      }
+                      title={`Configure ${m}`}
+                    >
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="font-mono text-sm truncate">{m}</span>
+                        {hasParams && (
+                          <span className="text-xs px-1.5 py-0.5 rounded bg-orange-200 dark:bg-orange-800 text-orange-800 dark:text-orange-200">
+                            configured
+                          </span>
+                        )}
                       </div>
-
-                      {isExpanded && (
-                        <div className="px-3 pb-3 border-t border-orange-200 dark:border-orange-700">
-                          <div className="grid grid-cols-3 gap-3 mb-4 mt-3">
-                            <div>
-                              <label className="block mb-1 text-xs font-medium">Temperature</label>
-                              <input
-                                type="number"
-                                step={0.1}
-                                min={0}
-                                max={2}
-                                value={modelParams[m]?.temperature ?? ""}
-                                placeholder="↳ global / default"
-                                onChange={(e) =>
-                                  setModelParams((prev) => ({
-                                    ...prev,
-                                    [m]: { ...prev[m], temperature: e.target.value ? Number(e.target.value) : undefined },
-                                  }))
-                                }
-                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="block mb-1 text-xs font-medium">Max Tokens</label>
-                              <input
-                                type="number"
-                                min={1}
-                                value={modelParams[m]?.max_tokens ?? ""}
-                                placeholder="↳ global / default"
-                                onChange={(e) =>
-                                  setModelParams((prev) => ({
-                                    ...prev,
-                                    [m]: { ...prev[m], max_tokens: e.target.value ? Number(e.target.value) : undefined },
-                                  }))
-                                }
-                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-                              />
-                            </div>
-                            <div>
-                              <label className="block mb-1 text-xs font-medium">Min Tokens</label>
-                              <input
-                                type="number"
-                                min={1}
-                                value={modelParams[m]?.min_tokens ?? ""}
-                                placeholder="optional"
-                                onChange={(e) =>
-                                  setModelParams((prev) => ({
-                                    ...prev,
-                                    [m]: { ...prev[m], min_tokens: e.target.value ? Number(e.target.value) : undefined },
-                                  }))
-                                }
-                                className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
-                              />
-                            </div>
-                          </div>
-
-                          <ProviderParameterEditor
-                            model={m}
-                            providerWire={wire}
-                            params={modelParams[m] || {}}
-                            onUpdate={(params) => setModelParams((prev) => ({ ...prev, [m]: params }))}
-                          />
-
-                          {hasParams && (
-                            <div className="mt-3 pt-3 border-t border-orange-200 dark:border-orange-700">
-                              <button
-                                onClick={() => setModelParams((prev) => ({ ...prev, [m]: {} }))}
-                                className="text-xs px-2 py-1 rounded-md border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
-                              >
-                                Clear all parameters
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      )}
+                      <div className="flex items-center gap-2">
+                        <span className={`text-xs px-1.5 py-0.5 rounded ${PROVIDER_BADGE_BG[brand]}`}>{brand}</span>
+                        <svg className={`w-4 h-4 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </div>
                     </div>
-                  );
-                })}
-              </div>
 
+                    {isExpanded && (
+                      <div className="px-3 pb-3 border-t border-orange-200 dark:border-orange-700">
+                        <div className="grid grid-cols-3 gap-3 mb-4 mt-3">
+                          <div>
+                            <label className="block mb-1 text-xs font-medium">Temperature</label>
+                            <input
+                              type="number"
+                              step={0.1}
+                              min={0}
+                              max={2}
+                              value={modelParams[m]?.temperature ?? ""}
+                              placeholder="↳ global / default"
+                              onChange={(e) =>
+                                setModelParams((prev) => ({
+                                  ...prev,
+                                  [m]: { ...prev[m], temperature: e.target.value ? Number(e.target.value) : undefined },
+                                }))
+                              }
+                              className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block mb-1 text-xs font-medium">Max Tokens</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={modelParams[m]?.max_tokens ?? ""}
+                              placeholder="↳ global / default"
+                              onChange={(e) =>
+                                setModelParams((prev) => ({
+                                  ...prev,
+                                  [m]: { ...prev[m], max_tokens: e.target.value ? Number(e.target.value) : undefined },
+                                }))
+                              }
+                              className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="block mb-1 text-xs font-medium">Min Tokens</label>
+                            <input
+                              type="number"
+                              min={1}
+                              value={modelParams[m]?.min_tokens ?? ""}
+                              placeholder="optional"
+                              onChange={(e) =>
+                                setModelParams((prev) => ({
+                                  ...prev,
+                                  [m]: { ...prev[m], min_tokens: e.target.value ? Number(e.target.value) : undefined },
+                                }))
+                              }
+                              className="w-full rounded-md border border-orange-200 dark:border-orange-500/40 p-2 bg-white dark:bg-zinc-900 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <ProviderParameterEditor
+                          model={m}
+                          providerWire={wire}
+                          params={modelParams[m] || {}}
+                          onUpdate={(params) => setModelParams((prev) => ({ ...prev, [m]: params }))}
+                        />
+
+                        {hasParams && (
+                          <div className="mt-3 pt-3 border-t border-orange-200 dark:border-orange-700">
+                            <button
+                              onClick={() => setModelParams((prev) => ({ ...prev, [m]: {} }))}
+                              className="text-xs px-2 py-1 rounded-md border border-red-200 text-red-700 bg-red-50 hover:bg-red-100 dark:border-red-800 dark:text-red-400 dark:bg-red-900/20 dark:hover:bg-red-900/40 transition"
+                            >
+                              Clear all parameters
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Right rail: Prompt, Run, and Chat results */}
+          <section className="space-y-4">
+            {/* Prompt and Run button only (system message removed from here) */}
+            <div className="flex flex-row gap-3 items-end mb-2">
+              <div className="flex-1 flex flex-col gap-2">
+                <label className="text-sm font-medium">Prompt</label>
+                <textarea
+                  ref={promptRef}
+                  className="w-full h-32 xl:h-40 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 leading-relaxed text-base"
+                  placeholder="Paste or write a long prompt here..."
+                  value={prompt}
+                  onChange={(evt) => setPrompt(evt.target.value)}
+                  spellCheck={true}
+                />
+              </div>
               <button
                 onClick={() => void runPrompt()}
                 disabled={!canRun}
-                className="w-full rounded-xl py-2 px-4 font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50"
+                className="h-12 xl:h-16 w-32 ml-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50 text-lg"
+                style={{ alignSelf: "flex-end" }}
               >
                 {isRunning ? "Running…" : "Run"}
               </button>
             </div>
-          </section>
 
-          {/* Right rail: Chat results */}
-          <section className="space-y-4">
+            {/* Chat results */}
             <ChatResults
               answers={answers}
               isRunning={isRunning}
@@ -1736,7 +1752,8 @@ export default function CompareLLMClient(): JSX.Element {
             setEmbedView={setEmbedView}
             isSearchingSingle={isSearchingSingle}
             searchContext={searchContext}
-            searchResults={searchResults}
+            searchResults={ searchResults}
+           
             isComparing={isComparing}
             multiSearchResults={multiSearchResults}
             getProviderType={getProviderType}

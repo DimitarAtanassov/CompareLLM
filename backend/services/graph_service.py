@@ -163,39 +163,42 @@ class GraphService:
         wire: str,
         model_kwargs: Optional[Dict[str, Any]] = None,
         memory_backend: Optional[Any] = None,
+        system: Optional[str] = None,
     ) -> Tuple[Any, Any]:
         """Build a graph for single model chat."""
         model_kwargs = model_kwargs or {}
         llm = resolve_and_init_from_registry(registry, wire, model_kwargs)
-        
         g = StateGraph(SingleState)
-        
+
         async def chatbot(state: SingleState):
+            msgs = state["messages"] or []
+            # Convert all to BaseMessage first
+            lc_msgs = self.convert_to_langchain_messages(msgs)
+            if system and (not lc_msgs or not isinstance(lc_msgs[0], SystemMessage)):
+                lc_msgs = [SystemMessage(content=system)] + lc_msgs
+            _log(f"[single] Messages to LLM: {lc_msgs}")
             got_any = False
-            async for chunk in llm.astream(self.convert_to_langchain_messages(state["messages"])):
+            async for chunk in llm.astream(lc_msgs):
                 piece = self.extract_text_from_chunk(chunk)
                 if piece:
                     got_any = True
                     # Stream deltas as strings
                     yield {"messages": [AIMessage(content=piece)]}
-            
             if not got_any:
                 # One-shot fallback: coerce the response safely to text
-                resp = await llm.ainvoke(self.convert_to_langchain_messages(state["messages"]))
+                resp = await llm.ainvoke(lc_msgs)
                 txt = self.to_safe_text(resp)
                 if txt:
                     # Ensure it's a plain string
                     if not isinstance(txt, str):
                         txt = str(txt)
                     yield {"messages": [AIMessage(content=txt)]}
-        
+
         g.add_node("chatbot", chatbot)
         g.add_edge(START, "chatbot")
         g.add_edge("chatbot", END)
-        
         checkpointer = memory_backend or InMemorySaver()
         compiled = g.compile(checkpointer=checkpointer)
-        
         _log(f"Built single model graph for wire: {wire}")
         return compiled, checkpointer
     
@@ -203,40 +206,38 @@ class GraphService:
     def build_multi_model_graph(
         self,
         registry: Any,
-        wires: List[str],
+        targets: List[str],
         per_model_params: Optional[Dict[str, Dict[str, Any]]] = None,
         memory_backend: Optional[Any] = None,
+        system: Optional[str] = None,
     ) -> Tuple[Any, Any]:
         """Build a graph for multi-model comparison."""
         per_model_params = per_model_params or {}
         g = StateGraph(MultiState)
-        
-        # Helper to create a model-invoking node
         def _make_chatbot_node(wire: str):
             async def chatbot_node(state: MultiState):
-                # Resolve the specific LLM from the registry
                 model_kwargs = per_model_params.get(wire, {})
                 llm = resolve_and_init_from_registry(registry, wire, model_kwargs)
-                
-                # Stream back deltas
+                msgs = state["messages"] or []
+                lc_msgs = self.convert_to_langchain_messages(msgs)
+                if system and (not lc_msgs or not isinstance(lc_msgs[0], SystemMessage)):
+                    lc_msgs = [SystemMessage(content=system)] + lc_msgs
+                _log(f"[multi] Messages to LLM ({wire}): {lc_msgs}")
                 got_any = False
-                async for chunk in llm.astream(self.convert_to_langchain_messages(state["messages"])):
+                async for chunk in llm.astream(lc_msgs):
                     piece = self.extract_text_from_chunk(chunk)
                     if piece:
                         got_any = True
                         yield {"results": {wire: piece}}
-                
-                # One-shot fallback
                 if not got_any:
-                    resp = await llm.ainvoke(self.convert_to_langchain_messages(state["messages"]))
+                    resp = await llm.ainvoke(lc_msgs)
                     txt = self.to_safe_text(resp)
                     if txt:
                         yield {"results": {wire: txt}}
-            
             return chatbot_node
         
         # Graph construction
-        wire_to_node = {w: self._safe_node_name(w, i) for i, w in enumerate(wires)}
+        wire_to_node = {w: self._safe_node_name(w, i) for i, w in enumerate(targets)}
         
         # Add a node for each model wire
         for wire, node_name in wire_to_node.items():
@@ -260,7 +261,7 @@ class GraphService:
         setattr(compiled, "_node_to_wire", node_to_wire)
         setattr(compiled, "_wire_to_node", wire_to_node)
         
-        _log(f"Built multi model graph for wires: {wires}")
+        _log(f"Built multi model graph for wires: {targets}")
         return compiled, checkpointer
     
     # ---------- Embedding Comparison Graph ----------  
@@ -355,3 +356,11 @@ class GraphService:
         
         _log(f"Built embedding comparison graph for keys: {embedding_keys}, dataset: {dataset_id}")
         return compiled, checkpointer
+    
+    def _build_prompt(self, system_text: Optional[str]):
+        msgs = []
+        if system_text:
+            msgs.append(("system", system_text))
+        msgs.append({"type": "history_placeholder"})
+        msgs.append(("human", "{input}"))
+        return msgs

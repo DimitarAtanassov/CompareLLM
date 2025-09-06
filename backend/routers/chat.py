@@ -90,7 +90,7 @@ class ChatRequest(BaseModel):
     prompt: str
     selections: List[ModelSelection]
     history: Optional[List[ChatMessageIn]] = None
-    system: Optional[str] = None
+    system: Optional[str] = None  # System message for all models
 
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None

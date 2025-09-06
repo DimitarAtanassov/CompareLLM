@@ -96,6 +96,7 @@ class LangGraphService:
         model_params: Optional[Dict[str, Any]] = None,
         thread_id: Optional[str] = None,
         memory_backend: Optional[Any] = None,
+        system: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream a single model chat response."""
         if not wire:
@@ -112,6 +113,7 @@ class LangGraphService:
             wire=wire,
             model_kwargs=model_params,
             memory_backend=memory_backend,
+            system=system,
         )
         
         # Open event
@@ -184,6 +186,7 @@ class LangGraphService:
         per_model_params: Optional[Dict[str, Dict[str, Any]]] = None,
         thread_id: Optional[str] = None,
         memory_backend: Optional[Any] = None,
+        system: Optional[str] = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream multi-model chat responses for comparison."""
         if not targets:
@@ -197,9 +200,10 @@ class LangGraphService:
         # Build graph using GraphService
         graph, _ = self.graph_service.build_multi_model_graph(
             registry=registry,
-            wires=targets,
+            targets=targets,
             per_model_params=per_model_params,
             memory_backend=memory_backend,
+            system=system,
         )
         node_to_wire = getattr(graph, "_node_to_wire", {}) or {}
         

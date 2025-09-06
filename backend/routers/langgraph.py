@@ -14,12 +14,14 @@ class SingleChatRequest(BaseModel):
     messages: List[Dict[str, str]] = Field(default_factory=list, description="Chat messages")
     model_params: Optional[Dict[str, Any]] = Field(default=None, description="Model parameters")
     thread_id: Optional[str] = Field(default="default", description="Thread ID for conversation memory")
+    system: Optional[str] = Field(default=None, description="System message for all models")
 
 class MultiChatRequest(BaseModel):
     targets: List[str] = Field(..., description="List of model wire identifiers")
     messages: List[Dict[str, str]] = Field(default_factory=list, description="Chat messages")
     per_model_params: Optional[Dict[str, Dict[str, Any]]] = Field(default=None, description="Per-model parameters")
     thread_id: Optional[str] = Field(default="compare", description="Thread ID for conversation memory")
+    system: Optional[str] = Field(default=None, description="System message for all models")
 
 # Dependency injection
 def get_langgraph_service(request: Request) -> LangGraphService:
@@ -54,6 +56,7 @@ async def chat_single_stream(
             model_params=payload.model_params,
             thread_id=payload.thread_id,
             memory_backend=memory_backend,
+            system=payload.system,
         ):
             yield chunk
     
@@ -86,6 +89,7 @@ async def chat_multi_stream(
             per_model_params=payload.per_model_params,
             thread_id=payload.thread_id,
             memory_backend=memory_backend,
+            system=payload.system,
         ):
             yield chunk
     
