@@ -61,8 +61,10 @@ class ProviderService:
     def list_vision_providers(self) -> List[Dict[str, Any]]:
         out = []
         for key, p in self.providers_cfg.items():
-            name = p.get("name") or key
             type_ = p.get("type") or "unknown"
+            if type_.lower() == "cerebras":
+                continue  # Exclude cerebras from vision models
+            name = p.get("name") or key
             base_url = p.get("base_url") or ""
             wire = p.get("wire")
             raw_models = p.get("models") or p.get("chat_models") or p.get("llm_models") or []
@@ -171,16 +173,35 @@ class ProviderService:
             re.compile(r"^o[34]($|-)", re.I),
         ]
         _GOOGLE_VISION = [
-            re.compile(r"^gemini-1\\.5($|-)", re.I),
+            re.compile(r"^gemini-1\.5($|-)", re.I),
             re.compile(r"^gemini-pro-vision($|-)", re.I),
-            re.compile(r"^gemini-2\\.0($|-)", re.I),
-            re.compile(r"^gemini-2\\.5(-flash(-lite)?|-pro)($|-)", re.I),
+            re.compile(r"^gemini-2\.0($|-)", re.I),
+            re.compile(r"^gemini-2\.5($|-)", re.I),
+            re.compile(r"^gemini-2\.5-.*$", re.I),  # matches gemini-2.5-flash, gemini-2.5-pro, etc.
         ]
         _ANTHROPIC_VISION = [
             re.compile(r"^claude-3($|-)", re.I),
             re.compile(r"^claude-3\\.5($|-)", re.I),
             re.compile(r"^claude-4($|-)", re.I),
             re.compile(r"^claude-4\\.1($|-)", re.I),
+        ]
+        _DEEPSEEK_VISION = [
+            re.compile(r"deepseek-vl", re.I),
+            re.compile(r"deepseek-vision", re.I),
+        ]
+        _OLLAMA_VISION = [
+            re.compile(r"llava", re.I),
+            re.compile(r"bakllava", re.I),
+            re.compile(r"phi-3-vision", re.I),
+            re.compile(r"llama3-v", re.I),
+            re.compile(r"mistral-instruct-v", re.I),
+            re.compile(r"neural-chat-v", re.I),
+        ]
+        _CEREBRAS_VISION = [
+            re.compile(r"llama3.1-8b", re.I),
+            re.compile(r"llama-4-scout-17b-16e-instruct", re.I),
+            re.compile(r"qwen-3-32b", re.I),
+            re.compile(r"gpt-oss-120b", re.I),
         ]
         if self._matches_any(model_name, self._provider_patterns_from_cfg(provider_cfg)):
             return True
@@ -192,6 +213,15 @@ class ProviderService:
                 return True
         elif pt == "anthropic":
             if self._matches_any(model_name, _ANTHROPIC_VISION):
+                return True
+        elif pt == "deepseek":
+            if self._matches_any(model_name, _DEEPSEEK_VISION):
+                return True
+        elif pt == "ollama":
+            if self._matches_any(model_name, _OLLAMA_VISION):
+                return True
+        elif pt == "cerebras":
+            if self._matches_any(model_name, _CEREBRAS_VISION):
                 return True
         if self._matches_any(model_name, self._env_regex_list()):
             return True

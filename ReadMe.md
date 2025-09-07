@@ -189,6 +189,10 @@ PRs and issues welcome! Please see the code for docstrings and comments. For maj
 
 ![Single Model Interaction](screenshots/singleModelInteraction.png)
 
+**Image Processing**
+
+![Image Processing](screenshots/img_processing.png)
+
 ---
 
 ## 📄 License

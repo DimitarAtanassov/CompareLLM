@@ -37,10 +37,13 @@ class VisionService:
         return [SystemMessage(content=system_text)] if system_text else []
 
     def _build_vision_human_message(self, provider_type: str, prompt_text: Optional[str], mime: str, raw: bytes) -> HumanMessage:
+        ptype = (provider_type or "").lower()
+        # Cerebras expects a plain string, not a list of parts
+        if ptype == "cerebras":
+            return HumanMessage(content=prompt_text or "")
         parts: List[dict] = []
         if prompt_text:
             parts.append({"type": "text", "text": prompt_text})
-        ptype = (provider_type or "").lower()
         if ptype == "anthropic":
             parts.append(self._anthropic_part(mime, raw))
         else:

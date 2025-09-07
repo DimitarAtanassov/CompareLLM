@@ -1670,17 +1670,18 @@ export default function CompareLLMClient(): JSX.Element {
                 <label className="text-sm font-medium">Prompt</label>
                 <textarea
                   ref={promptRef}
-                  className="w-full h-32 xl:h-40 resize-y rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 leading-relaxed text-base"
+                  className="w-full h-12 xl:h-16 resize-none rounded-xl border border-zinc-200 dark:border-zinc-800 p-3 outline-none focus:ring-2 focus:ring-orange-300/60 bg-white dark:bg-zinc-900 leading-relaxed text-base align-bottom"
                   placeholder="Paste or write a long prompt here..."
                   value={prompt}
                   onChange={(evt) => setPrompt(evt.target.value)}
                   spellCheck={true}
+                  style={{ minHeight: '3rem', maxHeight: '4rem' }}
                 />
               </div>
               <button
                 onClick={() => void runPrompt()}
                 disabled={!canRun}
-                className="h-12 xl:h-16 w-32 ml-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50 text-lg"
+                className="h-12 xl:h-16 w-32 ml-2 rounded-xl font-medium text-white bg-orange-600 hover:bg-orange-700 dark:bg-orange-500 dark:hover:bg-orange-600 transition disabled:opacity-50 text-lg align-bottom"
                 style={{ alignSelf: "flex-end" }}
               >
                 {isRunning ? "Running…" : "Run"}
