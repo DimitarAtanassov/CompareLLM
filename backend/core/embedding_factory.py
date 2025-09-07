@@ -9,7 +9,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_cohere import CohereEmbeddings
 from langchain_voyageai import VoyageAIEmbeddings
-from langchain_community.embeddings import OllamaEmbeddings
+from langchain_ollama import OllamaEmbeddings
 
 def _env_val(name: Optional[str]) -> Optional[str]:
     return os.getenv(name) if name else None
@@ -28,7 +28,7 @@ def build_embedding_model(
 
     Supported ptypes (from models.yaml):
       - openai
-      - gemini
+      - google
       - cohere
       - voyage
       - ollama
@@ -50,8 +50,8 @@ def build_embedding_model(
         # If your deployment needs extra headers/params, pass via env or add here.
         return OpenAIEmbeddings(model=model_name, api_key=api_key, base_url=base_url)
 
-    # ---- Google Gemini ----
-    if ptype == "gemini":
+    # ---- Google ----
+    if ptype == "google":
         if GoogleGenerativeAIEmbeddings is None:
             raise RuntimeError("langchain-google-genai not installed")
         # Typical models: 'text-embedding-004', 'embedding-001'

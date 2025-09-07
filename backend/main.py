@@ -7,11 +7,13 @@ from typing import AsyncIterator, Any, Dict
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 
+from routers import vision
 from routers import embeddings
 from core.dataset_catalog import DatasetCatalog
 from core.embedding_factory import build_embedding_model
 from core.embedding_registry import EmbeddingRegistry
-from services.embedding_services import EmbeddingService
+from services.embedding_service import EmbeddingService
+from services.provider_service import ProviderService
 from core.config_loader import load_config
 from core.model_registry import ModelRegistry
 from core.model_factory import build_chat_model
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.embedding_registry = emb_reg
     app.state.embedding_service = EmbeddingService(emb_reg)
     app.state.dataset_catalog = DatasetCatalog()
+    app.state.provider_service = ProviderService(cfg)
     _log(f"Initialized embeddings -> {emb_count} embedding model(s) available")
 
     try:
@@ -138,6 +141,7 @@ def create_app() -> FastAPI:
     app.include_router(chat.router)
     app.include_router(embeddings.router)
     app.include_router(langgraph.router)
+    app.include_router(vision.router)
 
     # Health + inventory
     @app.get("/health")

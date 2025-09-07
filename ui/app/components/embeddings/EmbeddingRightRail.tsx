@@ -8,6 +8,15 @@ import LoadingBar from "../ui/LoadingBar";
 import { PROVIDER_BADGE_BG } from "@/app/lib/colors";
 import { primarySnippet, redactResult } from "@/app/lib/utils";
 
+type EmbeddingResult = {
+  id?: string;
+  text?: string;
+  score?: number;
+  similarity_score?: number;
+  page_content?: string;
+  metadata?: Record<string, unknown>;
+};
+
 type EmbeddingRightRailProps = {
   embedView: "single" | "compare";
   setEmbedView: (v: "single" | "compare") => void;
@@ -24,6 +33,46 @@ type EmbeddingRightRailProps = {
   // branding helper
   getProviderType: (m: string) => ProviderBrand;
 };
+
+// Prefer similarity_score; fall back to score; else 0
+function scoreOf(row: unknown): number {
+  const r = (row ?? {}) as Partial<EmbeddingResult>;
+  if (typeof r.similarity_score === "number") return r.similarity_score;
+  if (typeof r.score === "number") return r.score;
+  return 0;
+}
+
+// Show a short, friendly metadata preview (avoid [object Object])
+function metaPreview(row: Record<string, unknown>): string {
+  const parts: string[] = [];
+
+  // prefer common fields
+  if (typeof row.title === "string" && row.title) parts.push(`title: ${row.title.slice(0, 40)}`);
+  if (typeof row.id === "string" && row.id) parts.push(`id: ${row.id.slice(0, 40)}`);
+
+  // look into metadata if present
+  const meta = row.metadata as Record<string, unknown> | undefined;
+  if (meta) {
+    if (typeof meta.title === "string" && meta.title) parts.push(`title: ${meta.title.slice(0, 40)}`);
+    if (typeof meta.id === "string" && meta.id) parts.push(`id: ${meta.id.slice(0, 40)}`);
+  }
+
+  // fallback: first few primitive fields (excluding embeddings/scores/internal)
+  if (parts.length === 0) {
+    const extras = Object.entries(row)
+      .filter(
+        ([k, v]) =>
+          !["similarity_score", "score", "embedding"].includes(k) &&
+          !k.startsWith("_") &&
+          (typeof v === "string" || typeof v === "number")
+      )
+      .slice(0, 3)
+      .map(([k, v]) => `${k}: ${String(v).slice(0, 40)}`);
+    parts.push(...extras);
+  }
+
+  return parts.slice(0, 3).join(" • ");
+}
 
 export default function EmbeddingRightRail({
   embedView,
@@ -107,13 +156,9 @@ export default function EmbeddingRightRail({
                 {searchResults.map((row, i) => {
                   const brand = getProviderType(searchContext.model);
                   const providerBadge = PROVIDER_BADGE_BG[brand];
-                  const pct = ((row.similarity_score ?? 0) * 100).toFixed(1);
 
-                  const metaLine = Object.entries(row)
-                    .filter(([k]) => !["similarity_score", "embedding"].includes(k) && !k.startsWith("_"))
-                    .slice(0, 3)
-                    .map(([k, v]) => `${k}: ${typeof v === "string" ? v.slice(0, 40) : String(v)}`)
-                    .join(" • ");
+                  const pct = (scoreOf(row) * 100).toFixed(1);
+                  const metaLine = metaPreview(row as unknown as Record<string, unknown>);
 
                   return (
                     <div key={i} className="rounded-lg border border-zinc-200 dark:border-zinc-800 p-3 bg-white dark:bg-zinc-950">
@@ -158,7 +203,7 @@ export default function EmbeddingRightRail({
             <h3 className="text-sm font-semibold">Multi-model comparison</h3>
             {isComparing && <Spinner />}
           </div>
-        {isComparing && <LoadingBar />}
+          {isComparing && <LoadingBar />}
 
           {!multiSearchResults && !isComparing && (
             <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-sm text-zinc-500 dark:text-zinc-400">
@@ -239,18 +284,14 @@ export default function EmbeddingRightRail({
                                   className={`shrink-0 inline-block px-2 py-1 rounded-full text-xs font-medium ${providerBadge}`}
                                   title="cosine similarity"
                                 >
-                                  {((item.similarity_score ?? 0) * 100).toFixed(1)}%
+                                  {(scoreOf(item) * 100).toFixed(1)}%
                                 </span>
                               </div>
 
                               <div className="mt-2">
                                 <div className="text-[13px] leading-snug">{primarySnippet(item, 220)}</div>
                                 <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400 font-mono">
-                                  {Object.entries(item)
-                                    .filter(([k]) => !["similarity_score", "embedding"].includes(k) && !k.startsWith("_"))
-                                    .slice(0, 3)
-                                    .map(([k, v]) => `${k}: ${typeof v === "string" ? v.slice(0, 40) : String(v)}`)
-                                    .join(" • ")}
+                                  {metaPreview(item as unknown as Record<string, unknown>)}
                                 </div>
                               </div>
                             </div>

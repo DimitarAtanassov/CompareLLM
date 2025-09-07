@@ -14,7 +14,7 @@ export const isProviderWire = (x?: string | null): x is ProviderWire =>
   x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" || x === "cohere" || x === "unknown";
 
 export const isProviderBrand = (x?: string | null): x is ProviderBrand =>
-  x === "anthropic" || x === "openai" || x === "gemini" || x === "ollama" ||
+  x === "anthropic" || x === "openai" || x === "ollama" ||
   x === "deepseek" || x === "voyage" || x === "cerebras" || x === "google" ||
   x === "cohere" || x === "unknown";
 
@@ -26,7 +26,7 @@ export const coerceBrand = (t?: string): ProviderBrand => {
   if (s.includes("voyage")) return "voyage";
   // keep your old fallback:
   // if (isProviderBrand(s as ProviderBrand)) return s as ProviderBrand;
-  return (["openai","anthropic","gemini","ollama","deepseek","voyage","cerebras","google","cohere", "unknown"] as const)
+  return (["openai","anthropic","ollama","deepseek","voyage","cerebras","google","cohere", "unknown"] as const)
     .includes(s as ProviderBrand) ? (s as ProviderBrand) : "unknown";
 };
 

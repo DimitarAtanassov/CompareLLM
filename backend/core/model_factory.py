@@ -9,11 +9,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
 from langchain_cohere import ChatCohere
 from langchain_cerebras import ChatCerebras
+from langchain_deepseek import ChatDeepSeek
 
-try:
-    from langchain_deepseek import ChatDeepSeek  # type: ignore
-except Exception:
-    ChatDeepSeek = None  # pragma: no cover
 
 
 def _env_val(name: str | None) -> str | None:
@@ -34,7 +31,7 @@ def build_chat_model(provider_key: str, provider_cfg: Dict[str, Any], model_name
         return ChatOpenAI(model=model_name, api_key=api_key, base_url=base_url, default_headers=headers)
     elif ptype == "anthropic":
         return ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers)
-    elif ptype == "gemini":
+    elif ptype == "google":
         return ChatGoogleGenerativeAI(model=model_name, api_key=api_key)
     elif ptype == "ollama":
         return ChatOllama(model=model_name, base_url=base_url)
@@ -70,10 +67,10 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     # max tokens
     mt = params.get("max_tokens")
     if mt is not None:
-        if pt == "gemini":
+        if pt == "google":
             out["max_output_tokens"] = mt
         elif pt == "ollama":
-            out["num_predict"] = mt
+            pass  # Will be handled in ollama-specific section below
         else:
             out["max_tokens"] = mt  # openai / anthropic / cohere / deepseek / cerebras
 
@@ -88,11 +85,11 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     if params.get("top_k") is not None:
         if pt == "cohere":
             out["k"] = params["top_k"]    # Cohere uses 'k'
-        elif pt in ("gemini", "ollama"):
+        elif pt in ("google", "ollama"):
             out["top_k"] = params["top_k"]
 
     # ✅ GEMINI: flat reasoning budget
-    if pt == "gemini":
+    if pt == "google":
         # prefer flat `thinking_budget`, fall back to `thinking_budget_tokens`
         tb = params.get("thinking_budget")
         if tb is None:
@@ -125,6 +122,18 @@ def normalize_chat_params(provider_type: str | None, params: Dict[str, Any] | No
     for k in ("timeout", "max_retries"):
         if params.get(k) is not None:
             out[k] = params[k]
+
+    # Ollama-specific parameters
+    if pt == "ollama":
+        options = {}
+        if params.get("max_tokens") is not None:
+            options["num_predict"] = params["max_tokens"]
+        ollama_params = ["mirostat", "mirostat_eta", "mirostat_tau", "num_ctx", "repeat_penalty"]
+        for k in ollama_params:
+            if params.get(k) is not None:
+                options[k] = params[k]
+        if options:
+            out["options"] = options
 
     return out
 
@@ -172,7 +181,7 @@ def build_chat_model_with_params(
     elif ptype == "anthropic":
         model_obj = ChatAnthropic(model=model_name, api_key=api_key, default_headers=headers, **norm)
 
-    elif ptype == "gemini":
+    elif ptype == "google":
         model_obj = ChatGoogleGenerativeAI(model=model_name, api_key=api_key, **norm)
 
     elif ptype == "cohere":
@@ -181,7 +190,7 @@ def build_chat_model_with_params(
     elif ptype == "ollama":
         model_obj = ChatOllama(model=model_name, base_url=base_url, **norm)
 
-    elif ptype == "deepseek" and ChatDeepSeek is not None:
+    elif ptype == "deepseek":
         model_obj = ChatDeepSeek(model=model_name, api_key=api_key, **norm)
 
     else:

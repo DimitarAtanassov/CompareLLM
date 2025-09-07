@@ -57,7 +57,7 @@ class ModelRegistry:
         return self._providers_cfg.get(provider_key, {})
 
     def provider_type(self, provider_key: str) -> str | None:
-        """Return the 'type' for a provider (e.g., 'openai', 'anthropic', 'gemini', ...)."""
+        """Return the 'type' for a provider (e.g., 'openai', 'anthropic', 'google', ...)."""
         cfg = self._providers_cfg.get(provider_key) or {}
         return cfg.get("type")
 

@@ -1,5 +1,5 @@
 # Multi-Model Platform Configuration
-# Supports: Anthropic, OpenAI, DeepSeek, Ollama, Gemini
+# Supports: Anthropic, OpenAI, DeepSeek, Ollama, Google
 
 providers:
   # Anthropic Claude Models
@@ -58,11 +58,11 @@ providers:
       - nomic-embed-text
       - all-minilm
 
-  # Google Gemini Models (optional)
-  gemini:
-    type: gemini
+  # Google Models (optional)
+  google:
+    type: google
     base_url: https://generativelanguage.googleapis.com
-    api_key_env: GEMINI_API_KEY
+    api_key_env: GOOGLE_API_KEY
     headers: {}
     models:
       - gemini-2.5-flash

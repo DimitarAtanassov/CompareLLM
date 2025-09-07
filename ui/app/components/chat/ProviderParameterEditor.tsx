@@ -176,8 +176,7 @@ export default function ProviderParameterEditor({
 
     return (
       <div className="space-y-3">
-        <h4 className={`text-sm font-semibold ${PROVIDER_TEXT_COLOR.gemini}`}>Gemini Parameters</h4>
-
+        <h4 className={`text-sm font-semibold ${PROVIDER_TEXT_COLOR.google}`}>Google Gemini Parameters</h4>
         <div className="grid grid-cols-3 gap-3">
           <Num label="Top-K" val={params.top_k} onChange={(n)=>updateParam("top_k",n)} placeholder="40" />
           <Num label="Top-P" val={params.top_p} min={0} max={1} step={0.1} onChange={(n)=>updateParam("top_p",n)} placeholder="0.9" />
