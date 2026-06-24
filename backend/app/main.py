@@ -13,7 +13,7 @@ from app.api.container import AppContainer
 from app.api.middleware import RequestContextMiddleware
 from app.api.routers import chat, embeddings, health, providers
 from app.errors import register_exception_handlers
-from app.logging import configure_logging, get_logger
+from app.log import configure_logging, get_logger
 from app.settings import Settings, get_settings
 
 log = get_logger(__name__)

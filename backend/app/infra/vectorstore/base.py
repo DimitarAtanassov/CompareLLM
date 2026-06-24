@@ -24,8 +24,7 @@ class VectorStore(Protocol):
         """Delete a store and all of its documents (idempotent)."""
         ...
 
-    async def store_exists(self, store_id: str) -> bool:
-        ...
+    async def store_exists(self, store_id: str) -> bool: ...
 
     async def list_stores(self) -> dict[str, str]:
         """Return ``{store_id: embedding_key}`` for all stores."""
@@ -46,9 +45,7 @@ class VectorStore(Protocol):
         """Upsert documents into a store. Returns the stored ids."""
         ...
 
-    async def search(
-        self, store_id: str, query_vector: list[float], k: int
-    ) -> list[SearchHit]:
+    async def search(self, store_id: str, query_vector: list[float], k: int) -> list[SearchHit]:
         """Return the top-``k`` hits by cosine similarity (score in ``[-1, 1]``)."""
         ...
 

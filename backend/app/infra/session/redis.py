@@ -28,9 +28,7 @@ class RedisSessionStore:
         raw = await self._client.lrange(self._key(thread_id, model), 0, -1)
         return [ChatMessage.model_validate(orjson.loads(item)) for item in raw]
 
-    async def append(
-        self, thread_id: str, model: str, messages: list[ChatMessage]
-    ) -> None:
+    async def append(self, thread_id: str, model: str, messages: list[ChatMessage]) -> None:
         if not messages:
             return
         key = self._key(thread_id, model)

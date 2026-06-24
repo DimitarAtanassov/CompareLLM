@@ -105,9 +105,7 @@ class MemoryVectorStore:
         order = np.argsort(-scores)[:limit]
         return [(records[i], float(scores[i])) for i in order]
 
-    async def search(
-        self, store_id: str, query_vector: list[float], k: int
-    ) -> list[SearchHit]:
+    async def search(self, store_id: str, query_vector: list[float], k: int) -> list[SearchHit]:
         return [
             SearchHit(page_content=record.content, metadata=record.metadata, score=score)
             for record, score in self._ranked(store_id, query_vector, k)

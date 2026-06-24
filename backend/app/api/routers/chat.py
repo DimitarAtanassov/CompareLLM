@@ -76,6 +76,4 @@ async def chat_stream(
         finally:
             task.cancel()
 
-    return StreamingResponse(
-        event_stream(), media_type="text/event-stream", headers=STREAM_HEADERS
-    )
+    return StreamingResponse(event_stream(), media_type="text/event-stream", headers=STREAM_HEADERS)

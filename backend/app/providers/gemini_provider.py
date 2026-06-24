@@ -53,7 +53,7 @@ class GeminiChat:
         try:
             stream = await self._client.aio.models.generate_content_stream(
                 model=self.model,
-                contents=_to_contents(conversation),
+                contents=_to_contents(conversation),  # type: ignore[arg-type]
                 config=config,
             )
             async for chunk in stream:
@@ -74,8 +74,9 @@ class GeminiEmbeddings:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         try:
             result = await self._client.aio.models.embed_content(
-                model=self.model, contents=texts
+                model=self.model,
+                contents=texts,  # type: ignore[arg-type]
             )
-            return [list(embedding.values) for embedding in result.embeddings]
+            return [list(embedding.values or []) for embedding in result.embeddings or []]
         except Exception as exc:  # noqa: BLE001
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc

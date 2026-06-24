@@ -8,7 +8,7 @@ import yaml
 
 from app.config.schema import ModelsConfig
 from app.errors import ConfigurationError
-from app.logging import get_logger
+from app.log import get_logger
 
 log = get_logger(__name__)
 
