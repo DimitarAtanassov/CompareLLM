@@ -7,21 +7,30 @@ LangGraph).
 See the [project README](../ReadMe.md) for the full architecture, request/response
 contracts, and run instructions.
 
+This project is managed with [uv](https://docs.astral.sh/uv/).
+
 ## Local development
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync                       # create the locked .venv and install all deps
 
 export MODELS_CONFIG=../config/models.yaml
-uvicorn app.main:app --reload --port 8080
+uv run uvicorn app.main:app --reload --port 8080
 ```
 
-## Quality gates
+## Quality gates (Makefile)
 
 ```bash
-ruff check app tests
-mypy app
-pytest
+make lintable   # auto-format + auto-fix (ruff format, ruff check --fix)
+make lint       # uv lock --check, ruff format --check, ruff check, mypy
+make test       # pytest with coverage (excludes contract/db markers)
+
+make test-contract     # marker: contract
+make test-integration  # marker: integration
+make test-db           # marker: db (needs Docker/Postgres)
 ```
+
+Linting uses a strict ruff ruleset (pyflakes, pycodestyle, mccabe, isort,
+pep8-naming, pyupgrade, flake8-annotations/bandit/bugbear/comprehensions/
+pytest-style, pylint, perflint, and more) configured in `pyproject.toml`.

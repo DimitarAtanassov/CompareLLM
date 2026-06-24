@@ -126,14 +126,15 @@ Open the UI at http://localhost:3000.
 
 ### Run the backend locally
 
+The backend is managed with [uv](https://docs.astral.sh/uv/).
+
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+uv sync   # create the locked .venv and install all dependencies
 
 export MODELS_CONFIG=../config/models.yaml
 # Defaults to in-memory backends; no Postgres/Redis required.
-uvicorn app.main:app --reload --port 8080
+uv run uvicorn app.main:app --reload --port 8080
 ```
 
 ---
@@ -204,15 +205,17 @@ same dataset be embedded by multiple models and compared side by side.
 
 ## Development
 
+The backend uses [uv](https://docs.astral.sh/uv/) and a Makefile for all quality gates:
+
 ```bash
 cd backend
-ruff check app tests   # lint
-mypy app               # type-check
-pytest                 # unit + API contract tests (no network; uses fakes)
+make lintable   # auto-format and auto-fix
+make lint       # uv lock --check + ruff format/check + mypy
+make test       # pytest with coverage (no network; uses fakes)
 ```
 
-Continuous integration runs all three on every push and pull request
-(`.github/workflows/ci.yml`).
+Continuous integration runs `make lint` and `make test` on every push and pull
+request (`.github/workflows/ci.yml`).
 
 ---
 

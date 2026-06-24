@@ -13,7 +13,7 @@ from app.domain.chat_service import ChatService
 from app.domain.embedding_service import EmbeddingService
 from app.infra.session import SessionStore, build_session_store
 from app.infra.vectorstore import VectorStore, build_vector_store
-from app.logging import get_logger
+from app.log import get_logger
 from app.providers.registry import ProviderRegistry
 from app.settings import Settings
 

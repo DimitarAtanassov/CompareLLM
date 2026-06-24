@@ -20,9 +20,7 @@ class SessionStore(Protocol):
         """Return the stored conversation for a thread/model (empty if none)."""
         ...
 
-    async def append(
-        self, thread_id: str, model: str, messages: list[ChatMessage]
-    ) -> None:
+    async def append(self, thread_id: str, model: str, messages: list[ChatMessage]) -> None:
         """Append messages to the stored conversation."""
         ...
 

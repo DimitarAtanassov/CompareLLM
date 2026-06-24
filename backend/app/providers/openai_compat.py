@@ -45,7 +45,9 @@ class OpenAICompatChat:
                 stream=True,
                 **openai_kwargs(params),
             )
-            async for chunk in stream:
+            # stream=True makes this an AsyncStream; the SDK's overload union
+            # cannot be narrowed statically through **kwargs.
+            async for chunk in stream:  # type: ignore[union-attr]
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta

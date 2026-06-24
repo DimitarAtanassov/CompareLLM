@@ -15,7 +15,7 @@ from typing import Any
 
 from app.domain.models import ChatMessage, GenerationParams
 from app.infra.session.base import SessionStore
-from app.logging import get_logger
+from app.log import get_logger
 from app.providers.registry import ProviderRegistry
 
 log = get_logger(__name__)
@@ -75,9 +75,7 @@ class ChatService:
             try:
                 provider = self._registry.get_chat(target)
                 params = GenerationParams.model_validate(per_model_params.get(target, {}))
-                history = (
-                    await self._sessions.get(thread_id, target) if thread_id else []
-                )
+                history = await self._sessions.get(thread_id, target) if thread_id else []
                 conversation = system_messages + history + new_turn
 
                 async for delta in provider.stream(conversation, params):

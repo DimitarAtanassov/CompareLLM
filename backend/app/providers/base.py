@@ -33,9 +33,7 @@ class ChatProvider(Protocol):
 
     model: str
 
-    def stream(
-        self, messages: list[ChatMessage], params: GenerationParams
-    ) -> AsyncIterator[str]:
+    def stream(self, messages: list[ChatMessage], params: GenerationParams) -> AsyncIterator[str]:
         """Yield text deltas for the given conversation."""
         ...
 

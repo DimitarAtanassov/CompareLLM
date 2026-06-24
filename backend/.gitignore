@@ -13,5 +13,11 @@ dist/
 .mypy_cache/
 .pytest_cache/
 
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Local logs
 logs/

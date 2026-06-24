@@ -15,7 +15,7 @@ from app.domain.models import SearchHit
 from app.errors import AppError, NotFoundError
 from app.infra.vectorstore.base import VectorStore
 from app.infra.vectorstore.mmr import maximal_marginal_relevance
-from app.logging import get_logger
+from app.log import get_logger
 from app.providers.registry import ProviderRegistry
 
 log = get_logger(__name__)

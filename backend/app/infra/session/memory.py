@@ -17,9 +17,7 @@ class MemorySessionStore:
     async def get(self, thread_id: str, model: str) -> list[ChatMessage]:
         return list(self._threads.get((thread_id, model), []))
 
-    async def append(
-        self, thread_id: str, model: str, messages: list[ChatMessage]
-    ) -> None:
+    async def append(self, thread_id: str, model: str, messages: list[ChatMessage]) -> None:
         if not messages:
             return
         async with self._lock:

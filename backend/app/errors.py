@@ -10,7 +10,7 @@ from __future__ import annotations
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-from app.logging import get_logger
+from app.log import get_logger
 
 log = get_logger(__name__)
 

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.domain.models import SearchHit
 from app.errors import NotFoundError, ValidationError
-from app.logging import get_logger
+from app.log import get_logger
 
 log = get_logger(__name__)
 
@@ -168,9 +168,7 @@ class PgVectorStore:
             )
         return ids
 
-    async def search(
-        self, store_id: str, query_vector: list[float], k: int
-    ) -> list[SearchHit]:
+    async def search(self, store_id: str, query_vector: list[float], k: int) -> list[SearchHit]:
         await self._require(store_id)
         async with self._engine.connect() as conn:
             rows = (
