@@ -1,8 +1,44 @@
 services:
-  # Ollama Service (local models)
+  # PostgreSQL with the pgvector extension (durable embeddings store)
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: compare
+      POSTGRES_PASSWORD: compare
+      POSTGRES_DB: compare
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U compare -d compare"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Redis (chat session memory)
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1"]
+    volumes:
+      - redis:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+    networks:
+      - app-network
+
+  # Ollama (local models)
   ollama:
     image: ollama/ollama:latest
-    # Do NOT pin platform; image is multi-arch (AMD64/ARM64)
     ports:
       - "11434:11434"
     volumes:
@@ -21,7 +57,7 @@ services:
     networks:
       - app-network
 
-  # Model Puller Service
+  # Pulls the Ollama models listed in models.yaml
   model-puller:
     image: alpine:3.20
     depends_on:
@@ -36,44 +72,47 @@ services:
     volumes:
       - ./config:/config:ro
       - ./scripts/pull-models.sh:/pull-models.sh:ro
-    # Make sure script runs even if Windows checked out with CRLF
     entrypoint: ["/bin/sh", "-lc", "apk add --no-cache dos2unix >/dev/null 2>&1 || true; dos2unix /pull-models.sh >/dev/null 2>&1 || true; chmod +x /pull-models.sh; /pull-models.sh"]
     restart: "no"
     networks:
       - app-network
 
-  # Backend API Service
+  # Backend API
   api:
     build: ./backend
     environment:
       MODELS_CONFIG: /config/models.yaml
-      MODELS_CONFIG_PATH: /config/models.yaml
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
       HOST: 0.0.0.0
       PORT: 8080
-      # Chat model API keys
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
+      # Persistence
+      VECTOR_BACKEND: ${VECTOR_BACKEND:-pgvector}
+      SESSION_BACKEND: ${SESSION_BACKEND:-redis}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://compare:compare@postgres:5432/compare}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Provider keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       GOOGLE_API_KEY: ${GOOGLE_API_KEY}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-${GOOGLE_API_KEY}}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       CEREBRAS_API_KEY: ${CEREBRAS_API_KEY}
-      # Embedding model API keys
       COHERE_API_KEY: ${COHERE_API_KEY}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY}
-      # Ollama connection
-      OLLAMA_HOST: http://ollama:11434
-      LANGSMITH_TRACING: ${LANGSMITH_TRACING}
-      LANGSMITH_API_KEY: ${LANGSMITH_API_KEY}
     volumes:
       - ./config:/config:ro
-      - ./backend/logs:/app/logs
     ports:
       - "8080:8080"
     depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
       model-puller:
         condition: service_completed_successfully
-    # Ensure curl exists in the image OR change to wget if needed
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
       interval: 30s
@@ -84,12 +123,12 @@ services:
     networks:
       - app-network
 
-  # Frontend UI Service
+  # Frontend UI
   ui:
     build: ./ui
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8080
-      NEXT_PUBLIC_API_URL: http://api:8080
+      INTERNAL_API_ORIGIN: http://api:8080
       NODE_ENV: production
     ports:
       - "3000:3000"
@@ -111,4 +150,8 @@ networks:
 
 volumes:
   ollama:
+    driver: local
+  postgres:
+    driver: local
+  redis:
     driver: local

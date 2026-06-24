@@ -63,9 +63,12 @@ export type ModelParamsMap = Record<string, PerModelParam>;
 export type ProvidersResp = { providers: ProviderInfo[] };
 export type AskAnswers = Record<string, { answer?: string; error?: string; latency_ms?: number }>;
 
-export type StreamEvent =
-  | { type: "meta"; models: string[] }
-  | { type: "chunk"; model: string; answer?: string; error?: string; latency_ms: number }
+// Unified SSE event shape emitted by POST /chat/stream.
+export type ChatStreamEvent =
+  | { type: "start"; model: string }
+  | { type: "delta"; model: string; text: string }
+  | { type: "error"; model: string; error: string }
+  | { type: "end"; model: string }
   | { type: "done" };
 
 export type Dataset = {
@@ -91,38 +94,14 @@ export type ModelChat = {
   currentResponse: string;
 };
 
-export type EnhancedChatRequest = {
+// Request body for POST /chat/stream. `messages` carries only the new turn when a
+// `thread_id` is supplied (server-side memory provides prior context); otherwise it
+// is the full conversation. `per_model_params` is keyed by `provider:model`.
+export type ChatStreamRequest = {
+  targets: string[];
   messages: { role: string; content: string }[];
-  models: string[];
-  temperature?: number;
-  max_tokens?: number;
-  min_tokens?: number;
-  anthropic_params?: {
-    thinking_enabled?: boolean;
-    thinking_budget_tokens?: number;
-    top_k?: number;
-    top_p?: number;
-    stop_sequences?: string[];
-  };
-  openai_params?: {
-    top_p?: number;
-    frequency_penalty?: number;
-    presence_penalty?: number;
-    seed?: number;
-  };
-  gemini_params?: {
-    top_k?: number;
-    top_p?: number;
-    candidate_count?: number;
-    safety_settings?: unknown[];
-  };
-  ollama_params?: {
-    mirostat?: number;
-    mirostat_eta?: number;
-    mirostat_tau?: number;
-    num_ctx?: number;
-    repeat_penalty?: number;
-  };
+  per_model_params?: Record<string, Record<string, unknown>>;
+  thread_id?: string;
 };
 
 export type MultiBucket = {

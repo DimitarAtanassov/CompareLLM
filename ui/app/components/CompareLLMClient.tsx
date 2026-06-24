@@ -51,20 +51,13 @@ const PREFIX_TO_BRAND: Record<string, ProviderBrand> = {
   deepseek: "deepseek",
 };
 
-// === Legacy NDJSON event shape from /chat/stream ===
-type NDJSONEvent =
-  | { type: "start"; provider: string; model: string }
-  | { type: "delta"; provider: string; model: string; text: string }
-  | { type: "end"; provider: string; model: string; text?: string }
-  | { type: "error"; provider: string; model: string; error: string }
-  | { type: "all_done" };
-
-// === NEW LangGraph stream shapes ===
-type LGEvent =
-  | { type: "delta"; scope: "multi"; model: string; node?: string; text: string; done?: boolean }
-  | { type: "done"; scope: "multi"; model?: string; done: true }
-  | { type: "delta"; scope: "single"; node?: string; delta: string; done?: boolean }
-  | { type: "done"; scope: "single"; done: true };
+// === Unified SSE event shape from POST /chat/stream ===
+type ChatStreamEvent =
+  | { type: "start"; model: string }
+  | { type: "delta"; model: string; text: string }
+  | { type: "error"; model: string; error: string }
+  | { type: "end"; model: string }
+  | { type: "done" };
 
 type Selection = { provider: string; model: string };
 type ChatMsg = { role: string; content: string };
@@ -73,33 +66,11 @@ type ChatMsg = { role: string; content: string };
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === "object";
 
-// Legacy /chat/* events
-const isNDJSONEvent = (e: unknown): e is NDJSONEvent => {
+// Unified /chat/stream events
+const isChatStreamEvent = (e: unknown): e is ChatStreamEvent => {
   if (!isRecord(e) || typeof e.type !== "string") return false;
-  if (e.type === "all_done") return true;
-  return (
-    typeof (e as { provider?: unknown }).provider === "string" &&
-    typeof (e as { model?: unknown }).model === "string" &&
-    (e.type === "start" || e.type === "delta" || e.type === "end" || e.type === "error")
-  );
-};
-
-// /langgraph/* events
-const isLGEvent = (e: unknown): e is LGEvent => {
-  if (!isRecord(e) || typeof e.type !== "string" || typeof (e as { scope?: unknown }).scope !== "string") return false;
-
-  const scope = (e as { scope: string }).scope;
-  if (scope === "multi") {
-    if (e.type === "delta") {
-      return typeof (e as { model?: unknown }).model === "string" && typeof (e as { text?: unknown }).text === "string";
-    }
-    if (e.type === "done") return true;
-  }
-  if (scope === "single") {
-    if (e.type === "delta") return typeof (e as { delta?: unknown }).delta === "string";
-    if (e.type === "done") return true;
-  }
-  return false;
+  if (e.type === "done") return true;
+  return typeof (e as { model?: unknown }).model === "string";
 };
 
 // --- Minimal SSE parser: collects "data:" lines until a blank line, then yields JSON payloads
@@ -894,34 +865,28 @@ export default function CompareLLMClient(): JSX.Element {
     interactiveAbortRef.current = controller;
 
     try {
-      const currentChat = modelChatsRef.current[activeModel] || { messages: [] as ModelChat["messages"] };
-      const conversationHistory = [
-        ...currentChat.messages,
-        { role: "user" as const, content: message, timestamp: Date.now() },
-      ];
-      const apiMessages: ChatMsg[] = conversationHistory.map((m) => ({ role: m.role, content: m.content }));
-
       const wire = toWire(getProviderKey(activeModel), activeModel);
-      const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           Accept: "text/event-stream",
         },
         body: JSON.stringify({
-          wire,
-          messages: apiMessages, // include the latest user message
-          model_params: modelParamsRef.current[activeModel] || {},
-          thread_id: threadId,   // shared thread for memory
+          targets: [wire],
+          // Only the new turn is sent; server-side thread memory supplies prior context.
+          messages: [{ role: "user", content: message }],
+          per_model_params: { [wire]: modelParamsRef.current[activeModel] || {} },
+          thread_id: threadId, // shared thread for memory
         }),
         signal: controller.signal,
       });
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
 
       const reader = res.body.getReader();
-      await readSSE<LGEvent>(reader, (evt) => {
-        if (evt.type === "delta" && evt.scope === "single") {
-          const piece = evt.delta || "";
+      await readSSE<ChatStreamEvent>(reader, (evt) => {
+        if (evt.type === "delta") {
+          const piece = evt.text || "";
           setModelChats((prev) => ({
             ...prev,
             [activeModel]: {
@@ -930,7 +895,7 @@ export default function CompareLLMClient(): JSX.Element {
               currentResponse: (prev[activeModel]?.currentResponse || "") + piece,
             },
           }));
-        } else if (evt.type === "done" && evt.scope === "single") {
+        } else if (evt.type === "end") {
           setModelChats((prev) => {
             const streamed = prev[activeModel]?.currentResponse || "";
             return {
@@ -1005,88 +970,56 @@ export default function CompareLLMClient(): JSX.Element {
     const startedAtRun = Date.now();
     const modelStart: Record<string, number> = {}; // latency starts on first delta per model
 
-    const processEvent = (evt: NDJSONEvent | LGEvent | unknown): void => {
-      // Legacy /chat/* shape
-      if (isNDJSONEvent(evt)) {
-        if (evt.type === "start") {
-          modelStart[evt.model] = Date.now();
-          return;
-        }
-        if (evt.type === "delta") {
-          setAnswers((prev) => ({
-            ...prev,
-            [evt.model]: {
-              answer: (prev[evt.model]?.answer || "") + (evt.text || ""),
-              error: prev[evt.model]?.error,
-              latency_ms: prev[evt.model]?.latency_ms ?? 0,
-            },
-          }));
-          return;
-        }
-        if (evt.type === "error") {
-          setAnswers((prev) => ({
-            ...prev,
-            [evt.model]: {
-              answer: prev[evt.model]?.answer || "",
-              error: evt.error || "Unknown error",
-              latency_ms: prev[evt.model]?.latency_ms ?? 0,
-            },
-          }));
-          return;
-        }
-        if (evt.type === "end") {
-          const t0 = modelStart[evt.model] ?? startedAtRun;
-          setAnswers((prev) => {
-            const prevAns = prev[evt.model]?.answer || "";
-            return {
-              ...prev,
-              [evt.model]: {
-                ...prev[evt.model],
-                answer: prevAns || evt.text || "",
-                latency_ms: Date.now() - t0,
-              },
-            };
-          });
-          return;
-        }
-        if (evt.type === "all_done") {
-          setIsRunning(false);
-          setEndedAt(Date.now());
-          streamAbortRef.current = null;
-          return;
-        }
+    const processEvent = (evt: ChatStreamEvent | unknown): void => {
+      if (!isChatStreamEvent(evt)) return;
+
+      if (evt.type === "done") {
+        setIsRunning(false);
+        setEndedAt(Date.now());
+        streamAbortRef.current = null;
+        return;
       }
 
-      // New /langgraph/* shape
-      if (isLGEvent(evt)) {
-        if (evt.scope === "multi") {
-          if (evt.type === "delta" && evt.model) {
-            const modelKey = modelForWire[evt.model] || evt.model;
-            if (!modelStart[modelKey]) modelStart[modelKey] = Date.now();
-            setAnswers((prev) => ({
-              ...prev,
-              [modelKey]: {
-                ...(prev[modelKey] || { answer: "", latency_ms: 0 }),
-                answer: (prev[modelKey]?.answer || "") + (evt.text || ""),
-              },
-            }));
-            return;
-          }
-          if (evt.type === "done" && evt.model) {
-            const modelKey = modelForWire[evt.model] || evt.model;
-            const t0 = modelStart[modelKey] ?? startedAtRun;
-            setAnswers((prev) => ({
-              ...prev,
-              [modelKey]: {
-                ...(prev[modelKey] || { answer: "" }),
-                latency_ms: Date.now() - t0,
-              },
-            }));
-            return;
-          }
-        }
+      // evt.model is the 'provider:model' wire; map it back to the UI model id.
+      const modelKey = modelForWire[evt.model] || evt.model;
+
+      if (evt.type === "start") {
+        modelStart[modelKey] = Date.now();
+        return;
       }
-      // ignore anything else
+      if (evt.type === "delta") {
+        if (!modelStart[modelKey]) modelStart[modelKey] = Date.now();
+        setAnswers((prev) => ({
+          ...prev,
+          [modelKey]: {
+            ...(prev[modelKey] || { answer: "", latency_ms: 0 }),
+            answer: (prev[modelKey]?.answer || "") + (evt.text || ""),
+          },
+        }));
+        return;
+      }
+      if (evt.type === "error") {
+        setAnswers((prev) => ({
+          ...prev,
+          [modelKey]: {
+            answer: prev[modelKey]?.answer || "",
+            error: evt.error || "Unknown error",
+            latency_ms: prev[modelKey]?.latency_ms ?? 0,
+          },
+        }));
+        return;
+      }
+      if (evt.type === "end") {
+        const t0 = modelStart[modelKey] ?? startedAtRun;
+        setAnswers((prev) => ({
+          ...prev,
+          [modelKey]: {
+            ...(prev[modelKey] || { answer: "" }),
+            latency_ms: Date.now() - t0,
+          },
+        }));
+        return;
+      }
     };
 
     try {
@@ -1098,7 +1031,7 @@ export default function CompareLLMClient(): JSX.Element {
         perModelParams: modelParamsRef.current,
       });
 
-      const res = await fetch(`${API_BASE}/langgraph/chat/multi/stream`, {
+      const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -1113,7 +1046,7 @@ export default function CompareLLMClient(): JSX.Element {
       if (!res.ok || !res.body) throw new Error(`Bad response: ${res.status} ${res.statusText}`);
 
       const reader = res.body.getReader();
-      await readSSE<NDJSONEvent | LGEvent>(reader, (evt) => {
+      await readSSE<ChatStreamEvent>(reader, (evt) => {
         try {
           processEvent(evt);
         } catch {
@@ -1148,16 +1081,16 @@ export default function CompareLLMClient(): JSX.Element {
 
       try {
         const wire = toWire(getProviderKey(model), model);
-        const res = await fetch(`${API_BASE}/langgraph/chat/single/stream`, {
+        const res = await fetch(`${API_BASE}/chat/stream`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             Accept: "text/event-stream",
           },
           body: JSON.stringify({
-            wire,
+            targets: [wire],
             messages: [{ role: "user", content: retryPrompt }],
-            model_params: modelParamsRef.current[model] || {},
+            per_model_params: { [wire]: modelParamsRef.current[model] || {} },
             thread_id: threadId, // shared thread id
           }),
           signal: controller.signal,
@@ -1169,9 +1102,9 @@ export default function CompareLLMClient(): JSX.Element {
         }
 
         const reader = res.body.getReader();
-        await readSSE<LGEvent>(reader, (evt) => {
-          if (evt.scope === "single" && evt.type === "delta") {
-            const piece = evt.delta || "";
+        await readSSE<ChatStreamEvent>(reader, (evt) => {
+          if (evt.type === "delta") {
+            const piece = evt.text || "";
             setAnswers((prev) => ({
               ...prev,
               [model]: {
@@ -1180,7 +1113,16 @@ export default function CompareLLMClient(): JSX.Element {
                 latency_ms: prev[model]?.latency_ms ?? 0,
               },
             }));
-          } else if (evt.scope === "single" && evt.type === "done") {
+          } else if (evt.type === "error") {
+            setAnswers((prev) => ({
+              ...prev,
+              [model]: {
+                answer: prev[model]?.answer || "",
+                error: evt.error || "Unknown error",
+                latency_ms: prev[model]?.latency_ms ?? 0,
+              },
+            }));
+          } else if (evt.type === "end") {
             setAnswers((prev) => ({
               ...prev,
               [model]: { ...(prev[model] || { answer: "" }), latency_ms: Date.now() - started },
