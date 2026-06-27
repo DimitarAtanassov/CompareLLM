@@ -105,6 +105,7 @@ Runtime configuration is read from environment variables (see `.env.example`).
 | `CORS_ALLOW_ORIGINS` | `http://localhost:3000,...`  | Comma-separated allowed origins          |
 | `LOG_LEVEL`        | `INFO`                         | Log level                                |
 | `LOG_JSON`         | `true`                         | JSON logs (`false` for console)          |
+| `FLOATING_PROMPTS_URL` | (unset)                    | Base URL of a running Floating Prompts API. Unset disables the prompts feature. |
 
 Provider API keys are supplied via the env var named in each provider's
 `api_key_env`. A provider whose key is missing is logged and simply skipped.
@@ -217,15 +218,60 @@ GET  /prompts/projects/{slug}/prompts/{name}/tags        List tags
 POST /prompts/projects/{slug}/prompts/{name}/render       Render with variables
 ```
 
-Enable it by pointing CompareLLM at the Floating Prompts API:
+#### Run it with a local Floating Prompts
+
+Floating Prompts is a separate app with its own repo, Postgres, and API. You run
+it first, then start CompareLLM and point it at the running API. The steps below
+are run from two terminals and have been tested end to end.
+
+**1. Start Floating Prompts (in its own repo).** It listens on
+`http://localhost:8000`.
 
 ```bash
-# Floating Prompts (separate repo): keep its Postgres volume across restarts.
-#   make db && make serve     # stop with `make down` (never `make clean`)
+cd /path/to/floating_prompts
+uv sync                                   # install its dependencies
+cp .env.example .env                      # first time only
+docker compose up -d postgres             # start its database
+uv run --directory apps/service alembic upgrade head   # create the schema
+uv run floating-prompts serve             # run the API on :8000
+```
 
-# CompareLLM:
-export FLOATING_PROMPTS_URL=http://localhost:8000     # host run
-# docker: FLOATING_PROMPTS_URL=http://host.docker.internal:8000
+**2. Add at least one prompt** so there is something to read. In another terminal:
+
+```bash
+cd /path/to/floating_prompts
+uv run floating-prompts project create acme "ACME Corp"
+uv run floating-prompts prompt add-version acme summarizer \
+    "Summarize:\n\n{{ content }}" --system-prompt "You are concise."
+uv run floating-prompts tag set acme summarizer production 1
+```
+
+**3. Start CompareLLM and point it at Floating Prompts.** The only extra setting
+is `FLOATING_PROMPTS_URL`:
+
+```bash
+cd backend
+export MODELS_CONFIG=../config/models.yaml
+export FLOATING_PROMPTS_URL=http://localhost:8000
+uv run uvicorn comparellm.main:app --reload --port 8080
+```
+
+> Running CompareLLM inside Docker instead? Use
+> `FLOATING_PROMPTS_URL=http://host.docker.internal:8000` so the container can
+> reach Floating Prompts on the host.
+
+**4. Check that the wiring works.** These calls hit CompareLLM, which reads from
+Floating Prompts for you:
+
+```bash
+curl http://localhost:8080/prompts/projects
+# -> [{"slug":"acme","name":"ACME Corp", ...}, ...]
+
+curl -X POST http://localhost:8080/prompts/projects/acme/prompts/summarizer/render \
+  -H 'content-type: application/json' \
+  -d '{"variables": {"content": "Hello, world!"}, "tag": "production"}'
+# -> {"name":"summarizer","version":1,"system_prompt":"You are concise.",
+#     "user_prompt":"Summarize:\n\nHello, world!"}
 ```
 
 When `FLOATING_PROMPTS_URL` is unset the endpoints return empty and the picker is
