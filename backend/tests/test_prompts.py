@@ -69,9 +69,7 @@ async def test_render_posts_body_and_parses() -> None:
         )
 
     catalog = _catalog(httpx.MockTransport(handler))
-    result = await catalog.render(
-        "acme", "greeter", {"name": "Ada"}, tag="production"
-    )
+    result = await catalog.render("acme", "greeter", {"name": "Ada"}, tag="production")
     assert captured == {"variables": {"name": "Ada"}, "version": None, "tag": "production"}
     assert result == Rendered(
         name="greeter", version=2, system_prompt="Be nice", user_prompt="Hi Ada"

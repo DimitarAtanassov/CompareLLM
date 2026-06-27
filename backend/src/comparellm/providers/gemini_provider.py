@@ -59,7 +59,7 @@ class GeminiChat:
             async for chunk in stream:
                 if chunk.text:
                     yield chunk.text
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc
 
 
@@ -78,5 +78,5 @@ class GeminiEmbeddings:
                 contents=texts,  # type: ignore[arg-type]
             )
             return [list(embedding.values or []) for embedding in result.embeddings or []]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc

@@ -106,7 +106,7 @@ class EmbeddingService:
             hits = [h.model_copy(update={"score": None}) for h in hits]
         return hits
 
-    async def compare(
+    async def compare(  # noqa: PLR0913 - public search API: each knob is an explicit, documented option
         self,
         dataset_id: str,
         embedding_keys: list[str],

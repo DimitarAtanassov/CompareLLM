@@ -20,5 +20,5 @@ class VoyageEmbeddings:
         try:
             result = await self._client.embed(texts, model=self.model)
             return [list(vector) for vector in result.embeddings]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc

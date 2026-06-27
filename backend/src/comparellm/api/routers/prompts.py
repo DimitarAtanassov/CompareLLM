@@ -39,9 +39,7 @@ async def list_prompts(slug: str, catalog: PromptCatalogDep) -> list[PromptRef]:
 
 
 @router.get("/projects/{slug}/prompts/{name}/versions")
-async def list_versions(
-    slug: str, name: str, catalog: PromptCatalogDep
-) -> list[VersionRef]:
+async def list_versions(slug: str, name: str, catalog: PromptCatalogDep) -> list[VersionRef]:
     return await catalog.list_versions(slug, name)
 
 
@@ -54,6 +52,4 @@ async def list_tags(slug: str, name: str, catalog: PromptCatalogDep) -> list[Tag
 async def render_prompt(
     slug: str, name: str, body: RenderRequest, catalog: PromptCatalogDep
 ) -> Rendered:
-    return await catalog.render(
-        slug, name, body.variables, version=body.version, tag=body.tag
-    )
+    return await catalog.render(slug, name, body.variables, version=body.version, tag=body.tag)

@@ -36,7 +36,7 @@ class CohereChat:
                     text = event.delta.message.content.text  # type: ignore[union-attr]
                     if text:
                         yield text
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc
 
 
@@ -57,5 +57,5 @@ class CohereEmbeddings:
                 embedding_types=["float"],
             )
             return list(response.embeddings.float_ or [])
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc

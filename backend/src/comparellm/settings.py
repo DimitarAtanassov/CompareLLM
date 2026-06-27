@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     environment: Literal["development", "staging", "production"] = "development"
 
     # --- HTTP server ---
-    host: str = "0.0.0.0"
+    host: str = "0.0.0.0"  # noqa: S104 - binding to all interfaces is intended inside containers
     port: int = 8080
 
     # --- Logging ---

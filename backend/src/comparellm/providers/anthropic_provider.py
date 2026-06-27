@@ -45,5 +45,5 @@ class AnthropicChat:
                 async for text in stream.text_stream:
                     if text:
                         yield text
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc

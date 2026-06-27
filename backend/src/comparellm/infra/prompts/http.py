@@ -33,9 +33,7 @@ class HttpPromptCatalog:
         timeout: float = 10.0,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), timeout=timeout
-        )
+        self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/"), timeout=timeout)
 
     async def _get(self, path: str, **kwargs: Any) -> Any:
         return self._unwrap(await self._request("GET", path, **kwargs))

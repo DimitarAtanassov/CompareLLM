@@ -54,7 +54,7 @@ class OpenAICompatChat:
                 text = getattr(delta, "content", None)
                 if text:
                     yield text
-        except Exception as exc:  # noqa: BLE001 - normalize all SDK errors
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc
 
 
@@ -70,5 +70,5 @@ class OpenAICompatEmbeddings:
         try:
             response = await self._client.embeddings.create(model=self.model, input=texts)
             return [item.embedding for item in response.data]
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ProviderError(f"{self._spec.key}:{self.model}: {exc}") from exc
