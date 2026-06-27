@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app.domain.models import GenerationParams
-from app.providers.params import (
+from comparellm.domain.models import GenerationParams
+from comparellm.providers.params import (
     anthropic_kwargs,
     cohere_kwargs,
     gemini_config_kwargs,

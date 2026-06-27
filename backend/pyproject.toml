@@ -58,57 +58,70 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["app*"]
+where = ["src"]
+include = ["comparellm*"]
 
 # --------------------------------------------------------------------------
 # Ruff
 # --------------------------------------------------------------------------
+# Shared rule set is kept identical to the floating_prompts repo so both
+# projects lint the same way; project-specific exceptions live in
+# per-file-ignores below (line-length stays at 100 here, a formatting-only
+# choice that does not change which lint rules fire).
 [tool.ruff]
+indent-width = 4
 line-length = 100
 target-version = "py311"
-src = ["app", "tests"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = [
-    "F",     # pyflakes
-    "E",     # pycodestyle errors
-    "W",     # pycodestyle warnings
-    "C90",   # mccabe complexity
-    "I",     # isort
-    "N",     # pep8-naming
-    "UP",    # pyupgrade
-    "YTT",   # flake8-2020
-    "ANN",   # flake8-annotations
-    "ASYNC", # flake8-async
-    "S",     # flake8-bandit
-    "BLE",   # flake8-blind-except
-    "B",     # flake8-bugbear
-    "A",     # flake8-builtins
-    "C4",    # flake8-comprehensions
-    "PT",    # flake8-pytest-style
-    "PD",    # pandas-vet
-    "PL",    # pylint
-    "PERF",  # perflint
+    "F",      # pyflakes
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "C90",    # mccabe complexity
+    "I",      # isort
+    "N",      # pep8-naming
+    "UP",     # pyupgrade
+    "YTT",    # flake8-2020
+    "ANN",    # flake8-annotations
+    "ASYNC",  # flake8-async
+    "S",      # flake8-bandit
+    "BLE",    # flake8-blind-except
+    "B",      # flake8-bugbear
+    "A",      # flake8-builtins
+    "C4",     # flake8-comprehensions
+    "PT",     # flake8-pytest-style
+    "PL",     # pylint
+    "PERF",   # perflint
+    "RUF",    # ruff-specific
 ]
 ignore = [
-    "PLR2004", # magic values in comparisons
-    "ANN401",  # allow typing.Any in a few generic helper signatures
-    "A003",    # class attribute shadowing a builtin (e.g. config field `type`)
-    "S104",    # binding to 0.0.0.0 is intended inside containers
-    "PLC0415", # deliberate lazy imports: optional provider SDKs / persistence
-               # backends are imported only when actually used (see registry/factories)
+    "PLR2004",  # magic values in comparisons
+    "W291",     # trailing whitespace
+    "W292",     # no newline at end of file
+    "W293",     # blank line contains whitespace
+    "E501",     # line too long (formatter handles wrapping)
 ]
 
 [tool.ruff.lint.pylint]
-max-args = 12
+max-args = 8
 
 [tool.ruff.lint.mccabe]
 max-complexity = 12
 
 [tool.ruff.lint.per-file-ignores]
 # Tests may assert, skip annotations, and use broad helpers.
-"tests/**" = ["S101", "ANN", "PLR0913", "PT011"]
+"tests/**" = ["S101", "S105", "S106", "ANN", "PLR2004", "INP001", "PLC0415", "PLR0913", "PT011"]
+# Optional provider SDKs and persistence backends are imported lazily, only
+# when actually selected (see registry/factories) — keep startup cheap and the
+# SDKs optional.
+"src/comparellm/**" = ["PLC0415"]
+# Boundary helpers that are intentionally dynamic: httpx passthrough kwargs and
+# raw driver/JSON values arrive untyped and are validated at the edge.
+"src/comparellm/infra/prompts/http.py" = ["ANN401"]
+"src/comparellm/infra/vectorstore/pgvector.py" = ["ANN401"]
+"src/comparellm/providers/params.py" = ["ANN401"]
 
 # --------------------------------------------------------------------------
 # mypy
@@ -140,7 +153,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["app"]
+source = ["comparellm"]
 branch = true
 
 [tool.coverage.report]

@@ -17,6 +17,7 @@ import {
 import { coerceBrand, pruneUndefined as pruneUndefBrandUtils } from "../lib/utils";
 import { API_BASE } from "../lib/config";
 import InteractiveChatModal from "./chat/InteractiveChatModal";
+import PromptPicker from "./chat/PromptPicker";
 import Tabs from "./ui/Tabs";
 import ModelList from "./chat/ModelList";
 import ProviderParameterEditor from "./chat/ProviderParameterEditor";
@@ -409,6 +410,9 @@ export default function CompareLLMClient(): JSX.Element {
 
   const [selected, setSelected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState<string>("");
+  // System prompt loaded from Floating Prompts; injected as a system message.
+  const [systemPrompt, setSystemPrompt] = useState<string>("");
+  const [systemPromptLabel, setSystemPromptLabel] = useState<string>("");
   const [isRunning, setIsRunning] = useState(false);
   const [answers, setAnswers] = useState<AskAnswers>({});
   const [startedAt, setStartedAt] = useState<number | null>(null);
@@ -465,6 +469,7 @@ export default function CompareLLMClient(): JSX.Element {
   const globalMaxRef = useRef<number | undefined>(undefined);
   const globalMinRef = useRef<number | undefined>(undefined);
   const promptRefLive = useRef<string>("");
+  const systemPromptRefLive = useRef<string>("");
   const selectedRef = useRef<string[]>([]);
   const modelChatsRef = useRef<Record<string, ModelChat>>({});
 
@@ -473,8 +478,15 @@ export default function CompareLLMClient(): JSX.Element {
   useEffect(() => { globalMaxRef.current = globalMax; }, [globalMax]);
   useEffect(() => { globalMinRef.current = globalMin; }, [globalMin]);
   useEffect(() => { promptRefLive.current = prompt; }, [prompt]);
+  useEffect(() => { systemPromptRefLive.current = systemPrompt; }, [systemPrompt]);
   useEffect(() => { selectedRef.current = selected; }, [selected]);
   useEffect(() => { modelChatsRef.current = modelChats; }, [modelChats]);
+
+  // Prepend the loaded system prompt (if any) to a request's messages.
+  const withSystem = useCallback((msgs: ChatMsg[]): ChatMsg[] => {
+    const s = systemPromptRefLive.current.trim();
+    return s ? [{ role: "system", content: s }, ...msgs] : msgs;
+  }, []);
 
   // ==== MEMO MAPS ====
   const modelToBrand = useMemo(() => {
@@ -875,7 +887,7 @@ export default function CompareLLMClient(): JSX.Element {
         body: JSON.stringify({
           targets: [wire],
           // Only the new turn is sent; server-side thread memory supplies prior context.
-          messages: [{ role: "user", content: message }],
+          messages: withSystem([{ role: "user", content: message }]),
           per_model_params: { [wire]: modelParamsRef.current[activeModel] || {} },
           thread_id: threadId, // shared thread for memory
         }),
@@ -933,7 +945,7 @@ export default function CompareLLMClient(): JSX.Element {
     } finally {
       interactiveAbortRef.current = null;
     }
-  }, [activeModel, interactivePrompt, getProviderKey, threadId]);
+  }, [activeModel, interactivePrompt, getProviderKey, threadId, withSystem]);
 
   // Providers-only chat streaming bits
   const canRun = prompt.trim().length > 0 && selected.length > 0 && !isRunning;
@@ -1030,6 +1042,7 @@ export default function CompareLLMClient(): JSX.Element {
         history: undefined,
         perModelParams: modelParamsRef.current,
       });
+      body.messages = withSystem(body.messages);
 
       const res = await fetch(`${API_BASE}/chat/stream`, {
         method: "POST",
@@ -1065,7 +1078,7 @@ export default function CompareLLMClient(): JSX.Element {
       setIsRunning(false);
       streamAbortRef.current = null;
     }
-  }, [canRun, resetRun, getProviderKey, threadId]);
+  }, [canRun, resetRun, getProviderKey, threadId, withSystem]);
 
   // === Retry single model via LangGraph single-stream (SSE) ===
   const retryModel = useCallback(
@@ -1089,7 +1102,7 @@ export default function CompareLLMClient(): JSX.Element {
           },
           body: JSON.stringify({
             targets: [wire],
-            messages: [{ role: "user", content: retryPrompt }],
+            messages: withSystem([{ role: "user", content: retryPrompt }]),
             per_model_params: { [wire]: modelParamsRef.current[model] || {} },
             thread_id: threadId, // shared thread id
           }),
@@ -1134,7 +1147,7 @@ export default function CompareLLMClient(): JSX.Element {
         setAnswers((prev) => ({ ...prev, [model]: { answer: "", error: `Retry failed: ${msg}`, latency_ms: 0 } }));
       }
     },
-    [lastRunPrompt, getProviderKey, threadId]
+    [lastRunPrompt, getProviderKey, threadId, withSystem]
   );
 
   const repromptFromResults = useCallback(() => {
@@ -1239,6 +1252,24 @@ export default function CompareLLMClient(): JSX.Element {
           <section className="rounded-2xl border border-zinc-200 dark:border-zinc-800 p-4 sm:p-5 bg-white dark:bg-zinc-950 shadow-sm">
             {/* Prompt */}
             <div className="space-y-4">
+              <PromptPicker
+                active={Boolean(systemPrompt)}
+                onApply={(text, label) => {
+                  setSystemPrompt(text);
+                  setSystemPromptLabel(label);
+                }}
+                onClear={() => {
+                  setSystemPrompt("");
+                  setSystemPromptLabel("");
+                }}
+              />
+              {systemPrompt && (
+                <div className="flex items-center gap-2 rounded-lg bg-orange-50 dark:bg-orange-950/30 px-3 py-2 text-xs">
+                  <span className="font-medium text-orange-700 dark:text-orange-300">
+                    System prompt: {systemPromptLabel}
+                  </span>
+                </div>
+              )}
               <label className="text-sm font-medium">Prompt</label>
               <textarea
                 ref={promptRef}

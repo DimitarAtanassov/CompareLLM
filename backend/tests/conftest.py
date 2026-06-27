@@ -5,15 +5,16 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 import pytest
-from app.domain.chat_service import ChatService
-from app.domain.embedding_service import EmbeddingService
-from app.infra.session.memory import MemorySessionStore
-from app.infra.vectorstore.memory import MemoryVectorStore
-from app.main import create_app
-from app.settings import Settings
 from asgi_lifespan import LifespanManager
 from httpx import ASGITransport, AsyncClient
 
+from comparellm.domain.chat_service import ChatService
+from comparellm.domain.embedding_service import EmbeddingService
+from comparellm.infra.prompts.disabled import DisabledPromptCatalog
+from comparellm.infra.session.memory import MemorySessionStore
+from comparellm.infra.vectorstore.memory import MemoryVectorStore
+from comparellm.main import create_app
+from comparellm.settings import Settings
 from tests.fakes import FakeRegistry
 
 
@@ -32,10 +33,12 @@ class FakeContainer:
         self.session_store = MemorySessionStore()
         self.chat_service = ChatService(self.registry, self.session_store)  # type: ignore[arg-type]
         self.embedding_service = EmbeddingService(self.registry, self.vector_store)  # type: ignore[arg-type]
+        self.prompt_catalog = DisabledPromptCatalog()
 
     async def aclose(self) -> None:
         await self.vector_store.close()
         await self.session_store.close()
+        await self.prompt_catalog.close()
 
 
 @pytest.fixture

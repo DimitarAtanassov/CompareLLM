@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from app.settings import Settings
+
+from comparellm.settings import Settings
 
 
 def test_cors_origins_accepts_comma_separated_string(monkeypatch: pytest.MonkeyPatch) -> None:

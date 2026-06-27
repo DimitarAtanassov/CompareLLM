@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-from app.domain.models import ChatMessage, GenerationParams
+from comparellm.domain.models import ChatMessage, GenerationParams
 
 _DIM = 16
 

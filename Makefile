@@ -1,7 +1,9 @@
 # CompareLLM - root orchestration Makefile.
-# Backend quality gates live in backend/Makefile (make -C backend lint|test|...).
+# Backend quality gates live in backend/Makefile; the lintable/lint/test
+# targets below delegate there so they can be run from the repo root.
 
 COMPOSE := docker compose
+BACKEND := backend
 
 # Local-dev wiring for the backend when run against the dockerized databases.
 DB_ENV := \
@@ -16,6 +18,21 @@ DB_ENV := \
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+# ---------------------------------------------------------------------------
+# Quality gates (backend)
+# ---------------------------------------------------------------------------
+.PHONY: lintable
+lintable: ## Apply backend auto-formatting and auto-fixes
+	$(MAKE) -C $(BACKEND) lintable
+
+.PHONY: lint
+lint: ## Run backend lint, format, and type checks
+	$(MAKE) -C $(BACKEND) lint
+
+.PHONY: test
+test: ## Run the backend test suite with coverage
+	$(MAKE) -C $(BACKEND) test
 
 # ---------------------------------------------------------------------------
 # Full stack (Docker Compose)
@@ -57,12 +74,12 @@ db-down: ## Stop the databases
 .PHONY: backend
 backend: ## Run the backend locally with in-memory backends (no DB needed)
 	cd backend && MODELS_CONFIG=../config/models.yaml \
-		uv run uvicorn app.main:app --reload --port 8080
+		uv run uvicorn comparellm.main:app --reload --port 8080
 
 .PHONY: backend-db
 backend-db: ## Run the backend locally wired to the dockerized DBs (needs 'make db')
 	cd backend && $(DB_ENV) \
-		uv run uvicorn app.main:app --reload --port 8080
+		uv run uvicorn comparellm.main:app --reload --port 8080
 
 .PHONY: frontend
 frontend: ## Run the frontend locally (Next.js dev server on :3000)

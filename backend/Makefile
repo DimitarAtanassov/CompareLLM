@@ -1,4 +1,4 @@
-sources = app tests
+sources = src tests
 
 .PHONY: prepare ## Sync the locked virtual environment
 prepare:
@@ -14,7 +14,7 @@ lint: prepare
 	uv lock --check
 	uv run ruff format --check $(sources)
 	uv run ruff check $(sources)
-	uv run mypy app
+	uv run mypy src
 
 .PHONY: test ## Run tests and coverage reports
 test: prepare

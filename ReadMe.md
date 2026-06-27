@@ -31,7 +31,7 @@ The backend is a layered, provider-agnostic service. Each layer depends only on
 the layer beneath it, which keeps the system orthogonal and easy to evolve.
 
 ```
-backend/app/
+backend/src/comparellm/
   settings.py            Typed configuration (pydantic-settings)
   logging.py             Structured JSON logging (structlog)
   errors.py              Error hierarchy + problem+json handlers
@@ -134,7 +134,7 @@ uv sync   # create the locked .venv and install all dependencies
 
 export MODELS_CONFIG=../config/models.yaml
 # Defaults to in-memory backends; no Postgres/Redis required.
-uv run uvicorn app.main:app --reload --port 8080
+uv run uvicorn comparellm.main:app --reload --port 8080
 ```
 
 ---
@@ -200,6 +200,36 @@ POST   /embeddings/compare          Search one dataset across multiple models
 
 Store ids follow the convention `{dataset_id}::{provider:model}`, which lets the
 same dataset be embedded by multiple models and compared side by side.
+
+### Prompts (Floating Prompts integration)
+
+CompareLLM can load **managed system prompts** from a running
+[Floating Prompts](https://github.com/) instance. Prompts are authored, versioned,
+and tagged in the Floating Prompts UI (backed by its own durable Postgres); the
+CompareLLM backend reads them server-to-server and the compare UI offers a picker
+that injects the chosen prompt as the system message.
+
+```
+GET  /prompts/projects                                   List projects
+GET  /prompts/projects/{slug}/prompts                    List prompts
+GET  /prompts/projects/{slug}/prompts/{name}/versions    List versions
+GET  /prompts/projects/{slug}/prompts/{name}/tags        List tags
+POST /prompts/projects/{slug}/prompts/{name}/render       Render with variables
+```
+
+Enable it by pointing CompareLLM at the Floating Prompts API:
+
+```bash
+# Floating Prompts (separate repo): keep its Postgres volume across restarts.
+#   make db && make serve     # stop with `make down` (never `make clean`)
+
+# CompareLLM:
+export FLOATING_PROMPTS_URL=http://localhost:8000     # host run
+# docker: FLOATING_PROMPTS_URL=http://host.docker.internal:8000
+```
+
+When `FLOATING_PROMPTS_URL` is unset the endpoints return empty and the picker is
+hidden — the rest of CompareLLM is unaffected.
 
 ---
 
