@@ -93,6 +93,10 @@ services:
       SESSION_BACKEND: ${SESSION_BACKEND:-redis}
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://compare:compare@postgres:5432/compare}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Optional: a running Floating Prompts API to load managed system prompts.
+      # Unset disables the feature. From a container, reach the host with
+      # host.docker.internal (or attach FP to this compose network).
+      FLOATING_PROMPTS_URL: ${FLOATING_PROMPTS_URL:-}
       # Provider keys
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}

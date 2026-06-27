@@ -16,7 +16,7 @@ cd backend
 uv sync                       # create the locked .venv and install all deps
 
 export MODELS_CONFIG=../config/models.yaml
-uv run uvicorn app.main:app --reload --port 8080
+uv run uvicorn comparellm.main:app --reload --port 8080
 ```
 
 ## Quality gates (Makefile)

@@ -57,12 +57,12 @@ db-down: ## Stop the databases
 .PHONY: backend
 backend: ## Run the backend locally with in-memory backends (no DB needed)
 	cd backend && MODELS_CONFIG=../config/models.yaml \
-		uv run uvicorn app.main:app --reload --port 8080
+		uv run uvicorn comparellm.main:app --reload --port 8080
 
 .PHONY: backend-db
 backend-db: ## Run the backend locally wired to the dockerized DBs (needs 'make db')
 	cd backend && $(DB_ENV) \
-		uv run uvicorn app.main:app --reload --port 8080
+		uv run uvicorn comparellm.main:app --reload --port 8080
 
 .PHONY: frontend
 frontend: ## Run the frontend locally (Next.js dev server on :3000)
